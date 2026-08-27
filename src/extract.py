@@ -54,13 +54,19 @@ class Extract:
         """
         params = {
             "pagina": pagina,
-            "nomeConjuntoDados": nome_conjunto_dados,
-            "dadosAbertos": dados_abertos,
             "isPrivado": self.DEFAULT_PRIVATE_FILTER,
-            "idOrganizacao": id_organizacao,
         }
-        return self._get("/dados/api/publico/conjuntos-dados", params=params)
 
+        if nome_conjunto_dados:
+            params["nomeConjuntoDados"] = nome_conjunto_dados
+
+        if dados_abertos is not None:
+            params["dadosAbertos"] = str(dados_abertos).lower()
+
+        if id_organizacao:
+            params["idOrganizacao"] = id_organizacao
+
+        return self._get("/dados/api/publico/conjuntos-dados", params=params)
     def detalhar_conjunto_de_dados(self, id_conjunto: str) -> JsonResponse:
         """Busca os detalhes de um conjunto de dados pelo seu identificador.
 

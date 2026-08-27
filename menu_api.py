@@ -8,6 +8,18 @@ def _ler_opcional(mensagem: str) -> Optional[str]:
     valor = input(mensagem).strip()
     return valor or None
 
+def _ler_dados_abertos() -> Optional[bool]:
+    while True:
+        valor = input("Apenas dados abertos? (s/n, opcional): ").strip().lower()
+
+        if valor == "":
+            return None
+        if valor == "s":
+            return True
+        if valor == "n":
+            return False
+
+        print("Informe apenas 's', 'n' ou pressione Enter.")
 
 def _ler_pagina() -> int:
     while True:
@@ -54,7 +66,7 @@ def menu_interativo(cliente_api: Extract) -> None:
                 resultado = cliente_api.listar_conjuntos_de_dados(
                     pagina=_ler_pagina(),
                     nome_conjunto_dados=_ler_opcional("Nome (opcional): "),
-                    dados_abertos=_ler_opcional("Apenas dados abertos? (s/n, opcional): "),
+                    dados_abertos=_ler_dados_abertos(),
                     id_organizacao=_ler_opcional("ID da organização (opcional): "),
                 )
             elif opcao == "2":
