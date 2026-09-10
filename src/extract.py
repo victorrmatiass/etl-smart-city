@@ -1,176 +1,217 @@
+import csv
+import io
 import os
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List
 
-import requests
+import certifi
 from dotenv import load_dotenv
+from pymongo import MongoClient
+from pymongo.server_api import ServerApi
+import requests
+
 
 load_dotenv()
 
 
-JsonResponse = Union[Dict[str, Any], List[Any], None]
-
-
 class Extract:
-    """Extrai dados públicos do Portal de Dados Abertos."""
+    """
+    Responsável por extrair os dados públicos de mobilidade urbana
+    utilizados no projeto Smart City.
+    """
 
-    BASE_URL = "https://dados.gov.br"
-    API_KEY_ENV = "CHAVE_API_DADOS_ABERTOS"
-    DEFAULT_PRIVATE_FILTER = "false"
+    # Configurações da fonte de dados
+    BNDES_BASE_URL = "https://dadosabertos.bndes.gov.br"
 
-    def __init__(self, api_key: Optional[str] = None) -> None:
-        """Inicializa o extrator usando uma chave informada ou configurada no `.env`."""
-        self.api_key = api_key or os.getenv(self.API_KEY_ENV, "")
-        if not self.api_key:
+    # Configurações do MongoDB
+    MONGODB_URI_ENV = "MONGODB_URI"
+    MONGO_DB = "SMART_CITY"
+    MONGO_COLLECTION = "MOBILIDADE_FICHAS_PROJETOS"
+
+    # Recursos disponíveis para extração
+    RECURSOS_CSV = {
+        "mobilidade_fichas_projetos": {
+            "dataset_id": "cf41fb63-4496-43cb-a043-08998291c858",
+            "resource_id": "ed69dbee-4eda-4831-9492-d41ea27ba8d9",
+            "arquivo": "mobilidade-fichas-projetos.csv",
+            "delimitador": ";",
+            "encoding": "cp1252",
+        },
+    }
+
+    # Regiões metropolitanas disponíveis no dataset
+    REGIOES_METROPOLITANAS = {
+        "RIDE Distrito Federal": "RIDEDF",
+        "RIDE Teresina": "RIDEGT",
+        "RM Baixada Santista": "RMBS",
+        "RM Belo Horizonte": "RMBH",
+        "RM Belém": "RMB",
+        "RM Campinas": "RMC",
+        "RM Curitiba": "RMC",
+        "RM Florianópolis": "RMF",
+        "RM Fortaleza": "RMF",
+        "RM Goiânia": "RMG",
+        "RM Grande Vitória": "RMGV",
+        "RM João Pessoa": "RMJP",
+        "RM Maceió": "RMM",
+        "RM Manaus": "RMM",
+        "RM Natal": "RMN",
+        "RM Porto Alegre": "RMPA",
+        "RM Recife": "RMR",
+        "RM Rio de Janeiro": "RMRJ",
+        "RM Salvador": "RMS",
+        "RM São Luís": "RMGSL",
+        "RM São Paulo": "RMSP",
+    }
+
+    def __init__(self) -> None:
+        """
+        Inicializa o extrator e configura a conexão com o MongoDB.
+        """
+
+        self.bndes_base_url = self.BNDES_BASE_URL
+        self.mongodb_uri_env = self.MONGODB_URI_ENV
+        self.mongo_db = self.MONGO_DB
+        self.mongo_collection = self.MONGO_COLLECTION
+
+        self.mongo_uri = os.getenv(self.mongodb_uri_env)
+
+        if not self.mongo_uri:
             raise ValueError(
-                f"Chave de API não encontrada. Defina {self.API_KEY_ENV} no .env."
+                f"Variável {self.mongodb_uri_env} não encontrada no .env."
             )
 
-        self.headers = {
-            "accept": "application/json",
-            "chave-api-dados-abertos": self.api_key,
-        }
-
-    def _get(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> JsonResponse:
-        """Executa uma requisição GET e retorna a resposta em JSON."""
-        url = f"{self.BASE_URL}{endpoint}"
-        response = requests.get(url, params=params, headers=self.headers)
-        response.raise_for_status()
-        return response.json()
-
-    def listar_conjuntos_de_dados(
-        self,
-        pagina: int,
-        nome_conjunto_dados: Optional[str] = None,
-        dados_abertos: Optional[bool] = None,
-        id_organizacao: Optional[str] = None,
-    ) -> JsonResponse:
-        """Lista conjuntos de dados, com filtros opcionais de nome, abertura e organização.
-
-        Args:
-            pagina: Número da página desejada.
-            nome_conjunto_dados: Parte do nome do conjunto a pesquisar.
-            dados_abertos: Filtra conjuntos marcados como dados abertos.
-            id_organizacao: Identificador da organização responsável.
-        """
-        params = {
-            "pagina": pagina,
-            "isPrivado": self.DEFAULT_PRIVATE_FILTER,
-        }
-
-        if nome_conjunto_dados:
-            params["nomeConjuntoDados"] = nome_conjunto_dados
-
-        if dados_abertos is not None:
-            params["dadosAbertos"] = str(dados_abertos).lower()
-
-        if id_organizacao:
-            params["idOrganizacao"] = id_organizacao
-
-        return self._get("/dados/api/publico/conjuntos-dados", params=params)
-    def detalhar_conjunto_de_dados(self, id_conjunto: str) -> JsonResponse:
-        """Busca os detalhes de um conjunto de dados pelo seu identificador.
-
-        Args:
-            id_conjunto: Identificador do conjunto de dados.
-        """
-        return self._get(f"/dados/api/publico/conjuntos-dados/{id_conjunto}")
-
-    def listar_tags_conjunto_de_dados(self, id_conjunto: str) -> JsonResponse:
-        """Lista as tags associadas a um conjunto de dados.
-
-        Args:
-            id_conjunto: Identificador do conjunto de dados.
-        """
-        return self._get(f"/dados/api/publico/conjuntos-dados/{id_conjunto}/tag")
-
-    def listar_observancia_legal(self) -> JsonResponse:
-        """Extrai os registros de observância legal dos conjuntos de dados."""
-        return self._get("/dados/api/publico/conjuntos-dados/observancia-legal")
-
-    def listar_objetivos_desenvolvimento_sustentavel(self) -> JsonResponse:
-        """Extrai os Objetivos de Desenvolvimento Sustentável disponíveis."""
-        return self._get("/dados/api/publico/conjuntos-dados/objetivos-desenvolvimento-sustentavel")
-
-    def listar_formatos(self) -> JsonResponse:
-        """Extrai os formatos de arquivo disponíveis nos conjuntos de dados."""
-        return self._get("/dados/api/publico/conjuntos-dados/formatos")
-
-    def consultar_solicitacoes(
-        self,
-        data_abertura: Optional[str] = None,
-        tipo_solicitacao: Optional[str] = None,
-        status_solicitacao: Optional[str] = None,
-    ) -> JsonResponse:
-        """Consulta solicitações usando data, tipo e status como filtros opcionais.
-
-        Args:
-            data_abertura: Data de abertura no formato `YYYY-MM-DD`.
-            tipo_solicitacao: Tipo da solicitação definido pela API.
-            status_solicitacao: Status da solicitação definido pela API.
-        """
-        params = {
-            "dataAbertura": data_abertura,
-            "tipoSolicitacao": tipo_solicitacao,
-            "statusSolicitacao": status_solicitacao,
-        }
-        return self._get("/dados/api/solicitacoes", params=params)
-
-    def listar_reusos(
-        self,
-        nome_reuso: Optional[str] = None,
-        nome_autor: Optional[str] = None,
-        id_organizacao: Optional[str] = None,
-    ) -> JsonResponse:
-        """Lista reúsos com filtros opcionais de nome, autor e organização.
-
-        Args:
-            nome_reuso: Parte do nome do reúso a pesquisar.
-            nome_autor: Nome do autor do reúso.
-            id_organizacao: Identificador da organização responsável.
-        """
-        params = {
-            "nomeReuso": nome_reuso,
-            "nomeAutor": nome_autor,
-            "idOrganizacao": id_organizacao,
-        }
-        return self._get("/dados/api/publico/reusos", params=params)
-
-    def detalhar_reuso(self, id_reuso: int) -> JsonResponse:
-        """Busca os detalhes de um reúso pelo identificador numérico.
-
-        Args:
-            id_reuso: Identificador numérico do reúso.
-        """
-        return self._get(f"/dados/api/publico/reuso/{id_reuso}")
-
-    def consultar_temas(self) -> JsonResponse:
-        """Extrai a lista de temas cadastrados no portal."""
-        return self._get("/dados/api/temas")
-
-    def consultar_tags(self, nome: str) -> JsonResponse:
-        """Busca tags pelo nome informado.
-
-        Args:
-            nome: Nome ou termo da tag a pesquisar.
-        """
-        return self._get("/dados/api/tags", params={"nome": nome})
-
-    def listar_organizacoes(self, pagina: int, nome: Optional[str] = None) -> JsonResponse:
-        """Lista organizações cadastradas, filtrando opcionalmente pelo nome.
-
-        Args:
-            pagina: Número da página desejada.
-            nome: Parte do nome da organização a pesquisar.
-        """
-        return self._get(
-            "/dados/api/publico/organizacao",
-            params={"pagina": pagina, "nome": nome},
+        self.client = MongoClient(
+            self.mongo_uri,
+            server_api=ServerApi("1"),
+            tlsCAFile=certifi.where(),
         )
 
-    def detalhar_organizacao(self, id_organizacao: str) -> JsonResponse:
-        """Busca os detalhes de uma organização pelo seu identificador.
+    def close(self) -> None:
+        """Encerra a conexão com o MongoDB."""
+        self.client.close()
 
-        Args:
-            id_organizacao: Identificador da organização.
+    def baixar_recurso_csv(
+        self,
+        recurso: str,
+    ) -> List[Dict[str, Any]]:
         """
-        return self._get(f"/dados/api/publico/organizacao/{id_organizacao}")
+        Baixa um recurso CSV diretamente do portal do BNDES.
+
+        Parâmetros:
+            recurso: nome do recurso disponível em RECURSOS_CSV.
+
+        Retorno:
+            Lista de dicionários contendo os registros extraídos.
+        """
+
+        if recurso not in self.RECURSOS_CSV:
+            raise ValueError(
+                f"Recurso CSV inválido: {recurso!r}. "
+                f"Opções disponíveis: {list(self.RECURSOS_CSV)}"
+            )
+
+        info = self.RECURSOS_CSV[recurso]
+
+        url = (
+            f"{self.bndes_base_url}/dataset/"
+            f"{info['dataset_id']}/resource/"
+            f"{info['resource_id']}/download/"
+            f"{info['arquivo']}"
+        )
+
+        response = requests.get(url, timeout=60)
+        response.raise_for_status()
+
+        conteudo = response.content.decode(info["encoding"])
+
+        leitor = csv.DictReader(
+            io.StringIO(conteudo),
+            delimiter=info["delimitador"],
+        )
+
+        linhas = [dict(linha) for linha in leitor]
+
+        print("Dados extraídos com sucesso diretamente do BNDES!")
+        print(f"Recurso: {recurso}")
+        print(f"Total de registros extraídos: {len(linhas)}")
+
+        return linhas
+
+    def baixar_mobilidade_fichas_projetos(
+        self,
+    ) -> List[Dict[str, Any]]:
+        """
+        Baixa as fichas de projetos de mobilidade urbana do BNDES.
+
+        Retorno:
+            Lista de dicionários com os projetos de mobilidade.
+        """
+
+        return self.baixar_recurso_csv("mobilidade_fichas_projetos")
+
+    def filtrar_por_regiao_metropolitana(
+        self,
+        dados: List[Dict[str, Any]],
+        regiao_metropolitana: str,
+    ) -> List[Dict[str, Any]]:
+        """
+        Filtra os projetos pertencentes a uma região metropolitana.
+
+        Parâmetros:
+            dados: registros brutos extraídos.
+            regiao_metropolitana: região que será utilizada no filtro.
+
+        Retorno:
+            Lista contendo somente os registros da região informada.
+        """
+
+        if regiao_metropolitana not in self.REGIOES_METROPOLITANAS:
+            raise ValueError(
+                f"Região metropolitana inválida: "
+                f"{regiao_metropolitana!r}. "
+                f"Opções disponíveis: "
+                f"{list(self.REGIOES_METROPOLITANAS)}"
+            )
+
+        dados_filtrados = [
+            linha
+            for linha in dados
+            if linha.get("rm") == regiao_metropolitana
+        ]
+
+        print(f"Região selecionada: {regiao_metropolitana}")
+        print(
+            "Registros encontrados para a região: "
+            f"{len(dados_filtrados)}"
+        )
+
+        return dados_filtrados
+
+    def extract_collection_from_mongo(
+        self,
+    ) -> List[Dict[str, Any]]:
+        """
+        Recupera os dados brutos armazenados no MongoDB.
+
+        Retorno:
+            Lista de documentos armazenados na coleção.
+        """
+
+        collection = self.client[
+            self.mongo_db
+        ][
+            self.mongo_collection
+        ]
+
+        documentos = list(collection.find())
+
+        print(
+            f"Dados lidos com sucesso da coleção "
+            f"'{self.mongo_collection}'!"
+        )
+        print(
+            "Total de documentos recuperados: "
+            f"{len(documentos)}"
+        )
+
+        return documentos
