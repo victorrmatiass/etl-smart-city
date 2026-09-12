@@ -8,7 +8,6 @@ from dotenv import load_dotenv
 from pymongo import MongoClient
 from pymongo.server_api import ServerApi
 
-
 load_dotenv()
 
 
@@ -43,9 +42,7 @@ class Load:
         self.mongo_uri = os.getenv(self.mongodb_uri_env)
 
         if not self.mongo_uri:
-            raise ValueError(
-                f"Variável {self.mongodb_uri_env} não encontrada no .env."
-            )
+            raise ValueError(f"Variável {self.mongodb_uri_env} não encontrada no .env.")
 
         self.client = MongoClient(
             self.mongo_uri,
@@ -68,11 +65,7 @@ class Load:
             data: lista de registros brutos que será armazenada.
         """
 
-        collection = self.client[
-            self.mongo_db
-        ][
-            self.mongo_collection
-        ]
+        collection = self.client[self.mongo_db][self.mongo_collection]
 
         # Evita duplicação quando o pipeline é executado novamente.
         collection.delete_many({})

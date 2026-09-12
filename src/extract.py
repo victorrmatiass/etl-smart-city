@@ -9,7 +9,6 @@ from pymongo import MongoClient
 from pymongo.server_api import ServerApi
 import requests
 
-
 load_dotenv()
 
 
@@ -92,9 +91,7 @@ class Extract:
         self.mongo_uri = os.getenv(self.mongodb_uri_env)
 
         if not self.mongo_uri:
-            raise ValueError(
-                f"Variável {self.mongodb_uri_env} não encontrada no .env."
-            )
+            raise ValueError(f"Variável {self.mongodb_uri_env} não encontrada no .env.")
 
         self.client = MongoClient(
             self.mongo_uri,
@@ -255,16 +252,11 @@ class Extract:
             )
 
         dados_filtrados = [
-            linha
-            for linha in dados
-            if linha.get("rm") == regiao_metropolitana
+            linha for linha in dados if linha.get("rm") == regiao_metropolitana
         ]
 
         print(f"Região selecionada: {regiao_metropolitana}")
-        print(
-            "Registros encontrados para a região: "
-            f"{len(dados_filtrados)}"
-        )
+        print("Registros encontrados para a região: " f"{len(dados_filtrados)}")
 
         return dados_filtrados
 
@@ -278,21 +270,11 @@ class Extract:
             Lista de documentos armazenados na coleção.
         """
 
-        collection = self.client[
-            self.mongo_db
-        ][
-            self.mongo_collection
-        ]
+        collection = self.client[self.mongo_db][self.mongo_collection]
 
         documentos = list(collection.find())
 
-        print(
-            f"Dados lidos com sucesso da coleção "
-            f"'{self.mongo_collection}'!"
-        )
-        print(
-            "Total de documentos recuperados: "
-            f"{len(documentos)}"
-        )
+        print(f"Dados lidos com sucesso da coleção " f"'{self.mongo_collection}'!")
+        print("Total de documentos recuperados: " f"{len(documentos)}")
 
         return documentos

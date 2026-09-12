@@ -38,7 +38,7 @@ def main() -> None:
 
     try:
         # ETAPA 1 - EXTRAÇÃO
-        
+
         print()
         print("=" * 60)
         print("ETAPA 1 - EXTRAÇÃO")
@@ -75,9 +75,7 @@ def main() -> None:
         print("ETAPA 4 - TRANSFORMAÇÃO")
         print("=" * 60)
 
-        df = transformer.transform_mobilidade_fichas_projetos(
-            data_recife
-        )
+        df = transformer.transform_mobilidade_fichas_projetos(data_recife)
 
         # ETAPA 5 - CARGA NO SQLITE
         print()
@@ -94,14 +92,8 @@ def main() -> None:
         print("=" * 60)
 
         print(f"Dados brutos no MongoDB: {len(data_mongo)}")
-        print(
-            f"Dados da {REGIAO_METROPOLITANA}: "
-            f"{len(data_recife)}"
-        )
-        print(
-            f"Dados transformados no SQLite: "
-            f"{len(df)}"
-        )
+        print(f"Dados da {REGIAO_METROPOLITANA}: " f"{len(data_recife)}")
+        print(f"Dados transformados no SQLite: " f"{len(df)}")
 
     finally:
         ld.close()

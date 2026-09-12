@@ -68,11 +68,7 @@ class Transform:
             errors="coerce",
         )
 
-        taxa_sucesso = (
-            convertido[preenchidos]
-            .notna()
-            .mean()
-        )
+        taxa_sucesso = convertido[preenchidos].notna().mean()
 
         if taxa_sucesso < self.LIMIAR_DETECCAO_NUMERICA:
             return serie
@@ -81,15 +77,8 @@ class Transform:
 
         valores = convertido.dropna()
 
-        if (
-            not valores.empty
-            and (valores % 1 == 0).all()
-        ):
-            return (
-                convertido
-                .round()
-                .astype("Int64")
-            )
+        if not valores.empty and (valores % 1 == 0).all():
+            return convertido.round().astype("Int64")
 
         return convertido
 
@@ -120,9 +109,7 @@ class Transform:
         )
 
         # Limpa valores textuais.
-        df = df.apply(
-            lambda coluna: coluna.map(self._limpar_texto)
-        )
+        df = df.apply(lambda coluna: coluna.map(self._limpar_texto))
 
         # Remove linhas completamente vazias.
         df = df.dropna(how="all")
@@ -150,9 +137,7 @@ class Transform:
         ]
 
         for coluna in colunas_restantes:
-            df[coluna] = self._converter_coluna_numerica(
-                df[coluna]
-            )
+            df[coluna] = self._converter_coluna_numerica(df[coluna])
 
         df = df.reset_index(drop=True)
 
