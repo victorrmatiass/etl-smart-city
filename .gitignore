@@ -175,6 +175,9 @@ smart_city.db
 # Pyre type checker
 .pyre/
 
+# Banco SQLite gerado pelo ETL
+data/db/
+
 # pytype static type analyzer
 .pytype/
 

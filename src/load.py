@@ -25,7 +25,7 @@ class Load:
     MONGO_COLLECTION = "MOBILIDADE_FICHAS_PROJETOS"
 
     # Configurações do SQLite
-    SQLITE_DATABASE = "smart_city.db"
+    SQLITE_DATABASE = os.path.join("data", "db", "smart_city.db")
     SQLITE_TABLE = "mobilidade_fichas_projetos"
 
     def __init__(self) -> None:
@@ -38,6 +38,8 @@ class Load:
         self.mongo_collection = self.MONGO_COLLECTION
         self.sqlite_database = self.SQLITE_DATABASE
         self.sqlite_table = self.SQLITE_TABLE
+
+        os.makedirs(os.path.dirname(self.sqlite_database), exist_ok=True)
 
         self.mongo_uri = os.getenv(self.mongodb_uri_env)
 
