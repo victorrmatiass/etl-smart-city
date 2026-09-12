@@ -3,13 +3,7 @@ from src.load import Load
 from src.transform import Transform
 import requests
 
-
-# Região utilizada pelo projeto Smart City.
 REGIAO_METROPOLITANA = "RM Recife"
-
-# Caminho local do CSV, usado como alternativa caso o download direto do
-# dados.gov.br não esteja disponível. Baixe o arquivo manualmente pelo
-# navegador e salve nesse caminho antes de rodar o pipeline.
 CAMINHO_CSV_LOCAL = "data/mobilidade-fichas-projetos.csv"
 
 
@@ -43,10 +37,8 @@ def main() -> None:
     transformer = Transform()
 
     try:
-        # ==========================================================
         # ETAPA 1 - EXTRAÇÃO
-        # ==========================================================
-
+        
         print()
         print("=" * 60)
         print("ETAPA 1 - EXTRAÇÃO")
@@ -56,10 +48,7 @@ def main() -> None:
 
         print(f"Registros extraídos: {len(data)}")
 
-        # ==========================================================
         # ETAPA 2 - CARGA DO DADO BRUTO NO MONGODB
-        # ==========================================================
-
         print()
         print("=" * 60)
         print("ETAPA 2 - CARGA DO DADO BRUTO NO MONGODB")
@@ -67,10 +56,7 @@ def main() -> None:
 
         ld.load_mongo(data)
 
-        # ==========================================================
         # ETAPA 3 - LEITURA E FILTRO
-        # ==========================================================
-
         print()
         print("=" * 60)
         print("ETAPA 3 - LEITURA E FILTRO")
@@ -83,10 +69,7 @@ def main() -> None:
             REGIAO_METROPOLITANA,
         )
 
-        # ==========================================================
         # ETAPA 4 - TRANSFORMAÇÃO
-        # ==========================================================
-
         print()
         print("=" * 60)
         print("ETAPA 4 - TRANSFORMAÇÃO")
@@ -96,10 +79,7 @@ def main() -> None:
             data_recife
         )
 
-        # ==========================================================
         # ETAPA 5 - CARGA NO SQLITE
-        # ==========================================================
-
         print()
         print("=" * 60)
         print("ETAPA 5 - CARGA NO SQLITE")
@@ -107,10 +87,7 @@ def main() -> None:
 
         ld.load_sqlite(df)
 
-        # ==========================================================
         # RESULTADO FINAL
-        # ==========================================================
-
         print()
         print("=" * 60)
         print("PIPELINE EXECUTADO COM SUCESSO!")
