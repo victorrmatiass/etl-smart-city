@@ -20,7 +20,8 @@ class Extract:
     """
 
     # Configurações da fonte de dados
-    BNDES_BASE_URL = "https://dadosabertos.bndes.gov.br"
+    DADOS_GOV_BR_BASE_URL = "https://dados.gov.br"
+    API_KEY_ENV = "CHAVE_API_DADOS_ABERTOS"
 
     # Configurações do MongoDB
     MONGODB_URI_ENV = "MONGODB_URI"
@@ -65,13 +66,28 @@ class Extract:
 
     def __init__(self) -> None:
         """
-        Inicializa o extrator e configura a conexão com o MongoDB.
+        Inicializa o extrator, configura a chave de API (opcional) e a
+        conexão com o MongoDB.
         """
 
-        self.bndes_base_url = self.BNDES_BASE_URL
+        self.dados_gov_br_base_url = self.DADOS_GOV_BR_BASE_URL
         self.mongodb_uri_env = self.MONGODB_URI_ENV
         self.mongo_db = self.MONGO_DB
         self.mongo_collection = self.MONGO_COLLECTION
+
+        self.api_key = os.getenv(self.API_KEY_ENV, "")
+        if not self.api_key:
+            print(
+                f"Aviso: {self.API_KEY_ENV} não foi definida no .env. "
+                "O download do CSV pela API pode falhar; nesse caso, use "
+                "carregar_mobilidade_fichas_projetos_local com o arquivo "
+                "baixado manualmente."
+            )
+
+        self.headers = {
+            "accept": "application/json",
+            "chave-api-dados-abertos": self.api_key,
+        }
 
         self.mongo_uri = os.getenv(self.mongodb_uri_env)
 
@@ -95,7 +111,7 @@ class Extract:
         recurso: str,
     ) -> List[Dict[str, Any]]:
         """
-        Baixa um recurso CSV diretamente do portal do BNDES.
+        Baixa um recurso CSV diretamente do portal dados.gov.br.
 
         Parâmetros:
             recurso: nome do recurso disponível em RECURSOS_CSV.
@@ -113,13 +129,13 @@ class Extract:
         info = self.RECURSOS_CSV[recurso]
 
         url = (
-            f"{self.bndes_base_url}/dataset/"
+            f"{self.dados_gov_br_base_url}/dataset/"
             f"{info['dataset_id']}/resource/"
             f"{info['resource_id']}/download/"
             f"{info['arquivo']}"
         )
 
-        response = requests.get(url, timeout=60)
+        response = requests.get(url, headers=self.headers, timeout=60)
         response.raise_for_status()
 
         conteudo = response.content.decode(info["encoding"])
@@ -131,7 +147,7 @@ class Extract:
 
         linhas = [dict(linha) for linha in leitor]
 
-        print("Dados extraídos com sucesso diretamente do BNDES!")
+        print("Dados extraídos com sucesso do dados.gov.br!")
         print(f"Recurso: {recurso}")
         print(f"Total de registros extraídos: {len(linhas)}")
 
@@ -141,13 +157,78 @@ class Extract:
         self,
     ) -> List[Dict[str, Any]]:
         """
-        Baixa as fichas de projetos de mobilidade urbana do BNDES.
+        Baixa as fichas de projetos de mobilidade urbana do dados.gov.br.
 
         Retorno:
             Lista de dicionários com os projetos de mobilidade.
         """
 
         return self.baixar_recurso_csv("mobilidade_fichas_projetos")
+
+    def carregar_csv_local(
+        self,
+        recurso: str,
+        caminho_arquivo: str,
+    ) -> List[Dict[str, Any]]:
+        """
+        Lê, de um arquivo já baixado no disco, o mesmo recurso CSV de
+        `baixar_recurso_csv`. Serve como alternativa quando o download
+        direto do dados.gov.br não está disponível, reaproveitando a
+        mesma configuração de delimitador e encoding de RECURSOS_CSV.
+
+        Parâmetros:
+            recurso: nome do recurso disponível em RECURSOS_CSV.
+            caminho_arquivo: caminho local do arquivo CSV já baixado.
+
+        Retorno:
+            Lista de dicionários contendo os registros lidos do arquivo.
+        """
+
+        if recurso not in self.RECURSOS_CSV:
+            raise ValueError(
+                f"Recurso CSV inválido: {recurso!r}. "
+                f"Opções disponíveis: {list(self.RECURSOS_CSV)}"
+            )
+
+        info = self.RECURSOS_CSV[recurso]
+
+        with open(
+            caminho_arquivo,
+            "r",
+            encoding=info["encoding"],
+            newline="",
+        ) as arquivo:
+            leitor = csv.DictReader(
+                arquivo,
+                delimiter=info["delimitador"],
+            )
+            linhas = [dict(linha) for linha in leitor]
+
+        print(f"Dados carregados com sucesso do arquivo local '{caminho_arquivo}'!")
+        print(f"Total de registros carregados: {len(linhas)}")
+
+        return linhas
+
+    def carregar_mobilidade_fichas_projetos_local(
+        self,
+        caminho_arquivo: str,
+    ) -> List[Dict[str, Any]]:
+        """
+        Atalho para carregar as fichas de mobilidade a partir de um
+        arquivo local, quando o download direto não está disponível.
+
+        Parâmetros:
+            caminho_arquivo: caminho do CSV baixado manualmente do
+                dados.gov.br.
+
+        Retorno:
+            Lista de dicionários com os projetos de mobilidade.
+        """
+
+        return self.carregar_csv_local(
+            "mobilidade_fichas_projetos",
+            caminho_arquivo,
+        )
 
     def filtrar_por_regiao_metropolitana(
         self,

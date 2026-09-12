@@ -1,10 +1,36 @@
 from src.extract import Extract
 from src.load import Load
 from src.transform import Transform
+import requests
 
 
 # Região utilizada pelo projeto Smart City.
 REGIAO_METROPOLITANA = "RM Recife"
+
+# Caminho local do CSV, usado como alternativa caso o download direto do
+# dados.gov.br não esteja disponível. Baixe o arquivo manualmente pelo
+# navegador e salve nesse caminho antes de rodar o pipeline.
+CAMINHO_CSV_LOCAL = "data/mobilidade-fichas-projetos.csv"
+
+
+def extrair_fichas_mobilidade(ext: Extract) -> list:
+    """
+    Baixa as fichas de mobilidade da API; se o download falhar, usa o
+    CSV local como alternativa.
+
+    Parâmetros:
+        ext: instância de Extract já inicializada.
+
+    Retorno:
+        Lista de dicionários com os projetos de mobilidade.
+    """
+
+    try:
+        return ext.baixar_mobilidade_fichas_projetos()
+    except requests.exceptions.RequestException as erro:
+        print(f"Falha ao baixar da API ({erro}).")
+        print(f"Usando o CSV local em '{CAMINHO_CSV_LOCAL}'.")
+        return ext.carregar_mobilidade_fichas_projetos_local(CAMINHO_CSV_LOCAL)
 
 
 def main() -> None:
@@ -26,7 +52,7 @@ def main() -> None:
         print("ETAPA 1 - EXTRAÇÃO")
         print("=" * 60)
 
-        data = ext.baixar_mobilidade_fichas_projetos()
+        data = extrair_fichas_mobilidade(ext)
 
         print(f"Registros extraídos: {len(data)}")
 
