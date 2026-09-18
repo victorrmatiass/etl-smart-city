@@ -1,10 +1,14 @@
+from pathlib import Path
+
+import requests
+
 from src.extract import Extract
 from src.load import Load
 from src.transform import Transform
-import requests
 
 REGIAO_METROPOLITANA = "RM Recife"
-CAMINHO_CSV_LOCAL = "data/mobilidade-fichas-projetos.csv"
+RAIZ_PROJETO = Path(__file__).resolve().parent
+CAMINHO_CSV_LOCAL = RAIZ_PROJETO / "data" / "mobilidade-fichas-projetos.csv"
 
 
 def extrair_fichas_mobilidade(ext: Extract) -> list:
@@ -32,11 +36,14 @@ def main() -> None:
     Executa o pipeline completo de ETL.
     """
 
-    ext = Extract()
-    ld = Load()
-    transformer = Transform()
+    ext = None
+    ld = None
 
     try:
+        ext = Extract()
+        ld = Load()
+        transformer = Transform()
+
         # ETAPA 1 - EXTRAÇÃO
 
         print()
@@ -77,13 +84,13 @@ def main() -> None:
 
         df = transformer.transform_mobilidade_fichas_projetos(data_recife)
 
-        # ETAPA 5 - CARGA NO SQLITE
+        # ETAPA 5 - CARGA NO NEONDB
         print()
         print("=" * 60)
-        print("ETAPA 5 - CARGA NO SQLITE")
+        print("ETAPA 5 - CARGA NO NEONDB")
         print("=" * 60)
 
-        ld.load_sqlite(df)
+        total_neon = ld.load_neon(df)
 
         # RESULTADO FINAL
         print()
@@ -93,11 +100,14 @@ def main() -> None:
 
         print(f"Dados brutos no MongoDB: {len(data_mongo)}")
         print(f"Dados da {REGIAO_METROPOLITANA}: " f"{len(data_recife)}")
-        print(f"Dados transformados no SQLite: " f"{len(df)}")
+        print(f"Dados transformados: {len(df)}")
+        print(f"Dados confirmados no NeonDB: {total_neon}")
 
     finally:
-        ld.close()
-        ext.close()
+        if ld is not None:
+            ld.close()
+        if ext is not None:
+            ext.close()
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 import csv
 import io
 import os
+from pathlib import Path
 from typing import Any, Dict, List
 
 import certifi
@@ -9,7 +10,8 @@ from pymongo import MongoClient
 from pymongo.server_api import ServerApi
 import requests
 
-load_dotenv()
+RAIZ_PROJETO = Path(__file__).resolve().parents[1]
+load_dotenv(RAIZ_PROJETO / ".env")
 
 
 class Extract:
@@ -20,6 +22,7 @@ class Extract:
 
     # Configurações da fonte de dados
     DADOS_GOV_BR_BASE_URL = "https://dados.gov.br"
+    DADOS_GOV_BR_DATASET_API = "/dados/api/publico/conjuntos-dados"
     API_KEY_ENV = "CHAVE_API_DADOS_ABERTOS"
 
     # Configurações do MongoDB
@@ -70,6 +73,7 @@ class Extract:
         """
 
         self.dados_gov_br_base_url = self.DADOS_GOV_BR_BASE_URL
+        self.dados_gov_br_dataset_api = self.DADOS_GOV_BR_DATASET_API
         self.mongodb_uri_env = self.MONGODB_URI_ENV
         self.mongo_db = self.MONGO_DB
         self.mongo_collection = self.MONGO_COLLECTION
@@ -125,14 +129,34 @@ class Extract:
 
         info = self.RECURSOS_CSV[recurso]
 
-        url = (
-            f"{self.dados_gov_br_base_url}/dataset/"
-            f"{info['dataset_id']}/resource/"
-            f"{info['resource_id']}/download/"
-            f"{info['arquivo']}"
+        url_metadados = (
+            f"{self.dados_gov_br_base_url}"
+            f"{self.dados_gov_br_dataset_api}/"
+            f"{info['dataset_id']}"
         )
 
-        response = requests.get(url, headers=self.headers, timeout=60)
+        response_metadados = requests.get(
+            url_metadados,
+            headers=self.headers,
+            timeout=30,
+        )
+        response_metadados.raise_for_status()
+
+        recursos = response_metadados.json().get("recursos", [])
+        recurso_encontrado = next(
+            (item for item in recursos if item.get("id") == info["resource_id"]),
+            None,
+        )
+
+        if not recurso_encontrado or not recurso_encontrado.get("link"):
+            raise ValueError(
+                "O recurso solicitado não foi encontrado nos metadados "
+                f"do dados.gov.br: {recurso!r}."
+            )
+
+        url_recurso = recurso_encontrado["link"]
+
+        response = requests.get(url_recurso, timeout=60)
         response.raise_for_status()
 
         conteudo = response.content.decode(info["encoding"])
@@ -144,7 +168,8 @@ class Extract:
 
         linhas = [dict(linha) for linha in leitor]
 
-        print("Dados extraídos com sucesso do dados.gov.br!")
+        print("Metadados consultados com sucesso na API do dados.gov.br!")
+        print("Dados extraídos com sucesso do recurso oficial!")
         print(f"Recurso: {recurso}")
         print(f"Total de registros extraídos: {len(linhas)}")
 

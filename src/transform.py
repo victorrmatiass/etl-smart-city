@@ -6,14 +6,12 @@ import pandas as pd
 class Transform:
     """
     Responsável por transformar os dados brutos de mobilidade
-    em um DataFrame limpo e organizado para o SQLite.
+    em um DataFrame limpo e organizado para o PostgreSQL do Neon.
     """
 
-    # Colunas que representam identificadores
-    COLUNAS_IDENTIFICADORAS_MOBILIDADE = (
-        "cod_proj",
-        "id_gpkg",
-    )
+    # Alguns códigos de projeto possuem letras, por exemplo "20302B".
+    COLUNAS_IDENTIFICADORAS_TEXTUAIS = ("cod_proj",)
+    COLUNAS_IDENTIFICADORAS_NUMERICAS = ("id_gpkg",)
 
     # Percentual mínimo de valores numéricos para conversão
     LIMIAR_DETECCAO_NUMERICA = 0.9
@@ -93,7 +91,7 @@ class Transform:
             data: registros brutos recebidos do Extract ou MongoDB.
 
         Retorno:
-            DataFrame limpo e organizado para carga no SQLite.
+            DataFrame limpo e organizado para carga no NeonDB.
         """
 
         if not data:
@@ -117,8 +115,13 @@ class Transform:
         # Remove registros duplicados.
         df = df.drop_duplicates()
 
-        # Converte identificadores para inteiro nullable.
-        for coluna in self.COLUNAS_IDENTIFICADORAS_MOBILIDADE:
+        # Preserva identificadores alfanuméricos como texto.
+        for coluna in self.COLUNAS_IDENTIFICADORAS_TEXTUAIS:
+            if coluna in df.columns:
+                df[coluna] = df[coluna].astype("string")
+
+        # Converte somente identificadores realmente numéricos.
+        for coluna in self.COLUNAS_IDENTIFICADORAS_NUMERICAS:
             if coluna in df.columns:
                 df[coluna] = (
                     pd.to_numeric(
@@ -133,7 +136,11 @@ class Transform:
         colunas_restantes = [
             coluna
             for coluna in df.columns
-            if coluna not in self.COLUNAS_IDENTIFICADORAS_MOBILIDADE
+            if coluna
+            not in (
+                *self.COLUNAS_IDENTIFICADORAS_TEXTUAIS,
+                *self.COLUNAS_IDENTIFICADORAS_NUMERICAS,
+            )
         ]
 
         for coluna in colunas_restantes:

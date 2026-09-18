@@ -1,6 +1,6 @@
 # Smart City - ETL de Dados Abertos
 
-Componente de ETL do projeto **Smart City - Plataforma de Gestão de Demandas Urbanas**. Extrai dados de mobilidade urbana do Portal de Dados Abertos (dados.gov.br), carrega o bruto no MongoDB, transforma com pandas e salva o resultado final no SQLite.
+Componente de ETL do projeto **Smart City - Plataforma de Gestão de Demandas Urbanas**. Extrai dados de mobilidade urbana do Portal de Dados Abertos (dados.gov.br), carrega o dado bruto no MongoDB Atlas, transforma com pandas e salva o resultado final no PostgreSQL do NeonDB.
 
 ## Integrantes do grupo
 
@@ -22,10 +22,13 @@ Componente de ETL do projeto **Smart City - Plataforma de Gestão de Demandas Ur
 Conjunto de dados **Mobilidade Brasil**, recurso de fichas de projetos de mobilidade, disponível em:
 
 ```
-https://dados.gov.br/dataset/cf41fb63-4496-43cb-a043-08998291c858/resource/ed69dbee-4eda-4831-9492-d41ea27ba8d9/download/mobilidade-fichas-projetos.csv
+https://dadosabertos.bndes.gov.br/dataset/cf41fb63-4496-43cb-a043-08998291c858/resource/ed69dbee-4eda-4831-9492-d41ea27ba8d9/download/mobilidade-fichas-projetos.csv
 ```
 
 O pipeline filtra os dados para a região metropolitana do **Recife**, foco do projeto.
+O endereço atual do arquivo não fica fixo no código: o pipeline consulta os
+metadados do conjunto pela API oficial do dados.gov.br e utiliza o link do
+recurso retornado pela API.
 
 ## Como funciona
 
@@ -45,7 +48,7 @@ Extract.extract_collection_from_mongo (relê + filtra RM Recife)
    Transform (limpeza / DataFrame)
         |
         v
-Load.load_sqlite  ->  SQLite (tabela final)
+Load.load_neon  ->  NeonDB/PostgreSQL (tabela final)
 ```
 
 Se o download direto da API falhar, o `run_etl.py` usa automaticamente o CSV salvo em `data/mobilidade-fichas-projetos.csv`.
@@ -53,8 +56,8 @@ Se o download direto da API falhar, o `run_etl.py` usa automaticamente o CSV sal
 ## Instalação
 
 ```
-python -m venv venv
-.\venv\Scripts\Activate.ps1
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 ```
 
@@ -65,9 +68,21 @@ Crie um arquivo `.env` na raiz do projeto:
 ```
 CHAVE_API_DADOS_ABERTOS=sua_chave_de_api_aqui
 MONGODB_URI=mongodb+srv://usuario:senha@cluster0.xxxxx.mongodb.net/?retryWrites=true&w=majority
+NEON_DATABASE_URL=postgresql://usuario:senha@servidor.neon.tech/neondb?sslmode=require
 ```
 
-Não versione o `.env` (ele já deve estar no `.gitignore`).
+Não versione o `.env` (ele já está no `.gitignore`). O arquivo
+`.env.example` serve como modelo e não contém credenciais reais.
+
+## Configuração do NeonDB
+
+1. Crie uma conta e um projeto em [neon.tech](https://neon.tech/).
+2. No painel do projeto, clique em **Connect**.
+3. Copie a connection string PostgreSQL e salve-a em `NEON_DATABASE_URL`.
+
+Uma chave da API administrativa do Neon não é necessária. O pipeline usa
+diretamente a connection string PostgreSQL. A tabela final é criada
+automaticamente durante a carga.
 
 ## Rodando o pipeline
 
@@ -75,19 +90,33 @@ Não versione o `.env` (ele já deve estar no `.gitignore`).
 python run_etl.py
 ```
 
-Isso grava os dados brutos na coleção `MOBILIDADE_FICHAS_PROJETOS` (banco `SMART_CITY`) no MongoDB e salva o resultado transformado na tabela `mobilidade_fichas_projetos` do arquivo `smart_city.db`.
+Isso grava os dados brutos na coleção `MOBILIDADE_FICHAS_PROJETOS` (banco `SMART_CITY`) no MongoDB Atlas, recupera e transforma os registros da RM Recife e salva o resultado na tabela `mobilidade_fichas_projetos` do NeonDB. Ao final, o programa consulta a tabela no Neon para confirmar a quantidade persistida.
+
+> **Atenção:** cada execução substitui o conteúdo da coleção bruta
+> no MongoDB e da tabela final no NeonDB.
+
+## Executando os testes
+
+```text
+python -m unittest discover -s tests -v
+```
+
+Os testes verificam o filtro regional, a preservação dos códigos de projeto
+alfanuméricos e a validação básica da URL do Neon.
 
 ## Estrutura dos arquivos
 
 ```
 etl-smart-city/
-├── .env                          # chave da API e URI do MongoDB (não versionado)
+├── .env                          # credenciais locais (não versionado)
+├── .env.example                  # modelo das variáveis de ambiente
 ├── data/
 │   └── mobilidade-fichas-projetos.csv   # CSV local (fallback)
 ├── src/
 │   ├── extract.py                # Extract: API + CSV local + leitura do MongoDB
 │   ├── transform.py              # Transform: limpeza e organização em DataFrame
-│   └── load.py                   # Load: persistência no MongoDB e no SQLite
+│   └── load.py                   # Load: persistência no MongoDB e no NeonDB
+├── tests/                         # testes automatizados
 ├── run_etl.py                    # Orquestra o pipeline completo
 ├── requirements.txt
 └── README.md
