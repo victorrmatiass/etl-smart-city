@@ -55,10 +55,22 @@ Se o download direto da API falhar, o `run_etl.py` usa automaticamente o CSV sal
 
 ## Instalação
 
-```
+### Windows (PowerShell)
+
+```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
+```
+
+### Linux / MacOS
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install --upgrade pip
+python3 -m pip install -r requirements.txt
 ```
 
 ## Configuração do `.env`
@@ -66,9 +78,9 @@ python -m pip install -r requirements.txt
 Crie um arquivo `.env` na raiz do projeto:
 
 ```
-CHAVE_API_DADOS_ABERTOS=sua_chave_de_api_aqui
-MONGODB_URI=mongodb+srv://usuario:senha@cluster0.xxxxx.mongodb.net/?retryWrites=true&w=majority
-NEON_DATABASE_URL=postgresql://usuario:senha@servidor.neon.tech/neondb?sslmode=require
+CHAVE_API_DADOS_ABERTOS="sua_chave_de_api_aqui"
+MONGODB_URI="mongodb+srv://usuario:senha@cluster0.xxxxx.mongodb.net/?retryWrites=true&w=majority"
+NEON_DATABASE_URL="postgresql://usuario:senha@servidor.neon.tech/neondb?sslmode=require"
 ```
 
 Não versione o `.env` (ele já está no `.gitignore`). O arquivo
@@ -86,8 +98,24 @@ automaticamente durante a carga.
 
 ## Rodando o pipeline
 
-```
+### Windows
+
+```powershell
 python run_etl.py
+```
+
+### Linux / WSL
+
+```bash
+source .venv/bin/activate
+python run_etl.py
+```
+
+Se o comando `python` não estiver disponível, use:
+
+```bash
+source .venv/bin/activate
+python3 run_etl.py
 ```
 
 Isso grava os dados brutos na coleção `MOBILIDADE_FICHAS_PROJETOS` (banco `SMART_CITY`) no MongoDB Atlas, recupera e transforma os registros da RM Recife e salva o resultado na tabela `mobilidade_fichas_projetos` do NeonDB. Ao final, o programa consulta a tabela no Neon para confirmar a quantidade persistida.
@@ -97,8 +125,24 @@ Isso grava os dados brutos na coleção `MOBILIDADE_FICHAS_PROJETOS` (banco `SMA
 
 ## Executando os testes
 
-```text
+### Windows
+
+```powershell
 python -m unittest discover -s tests -v
+```
+
+### Linux / WSL
+
+```bash
+source .venv/bin/activate
+python -m unittest discover -s tests -v
+```
+
+Se o comando `python` não estiver disponível, use:
+
+```bash
+source .venv/bin/activate
+python3 -m unittest discover -s tests -v
 ```
 
 Os testes verificam o filtro regional, a preservação dos códigos de projeto
