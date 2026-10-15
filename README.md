@@ -1,6 +1,6 @@
 # Smart City - ETL de Dados Abertos
 
-Componente de ETL do projeto **Smart City - Plataforma de Gestão de Demandas Urbanas**. Extrai dados de mobilidade urbana do Portal de Dados Abertos (dados.gov.br), carrega o dado bruto no MongoDB Atlas, transforma com pandas e salva o resultado final no PostgreSQL do NeonDB.
+Componente de ETL do projeto **Smart City - Plataforma de Gestão de Demandas Urbanas**. Extrai os atendimentos da Central 156 da EMLURB (Portal de Dados Abertos do Recife, 2026), carrega o dado bruto no MongoDB Atlas, transforma com pandas e salva o resultado final no SQLite (local) e no PostgreSQL do NeonDB.
 
 ## Integrantes do grupo
 
@@ -19,39 +19,66 @@ Componente de ETL do projeto **Smart City - Plataforma de Gestão de Demandas Ur
 
 ## Fonte de dados
 
-Conjunto de dados **Mobilidade Brasil**, recurso de fichas de projetos de mobilidade, disponível em:
+Conjunto de dados **Central de Atendimento de Serviços da EMLURB - 156**, recurso de **2026**, do Portal de Dados Abertos da Prefeitura do Recife (licença ODbL):
 
 ```
-https://dadosabertos.bndes.gov.br/dataset/cf41fb63-4496-43cb-a043-08998291c858/resource/ed69dbee-4eda-4831-9492-d41ea27ba8d9/download/mobilidade-fichas-projetos.csv
+https://dados.recife.pe.gov.br/dataset/central-de-atendimento-de-servicos-da-emlurb-156/resource/80c5b3cd-d4f7-466e-9031-e636ef56dd99
 ```
 
-O pipeline filtra os dados para a região metropolitana do **Recife**, foco do projeto.
-O endereço atual do arquivo não fica fixo no código: o pipeline consulta os
-metadados do conjunto pela API oficial do dados.gov.br e utiliza o link do
-recurso retornado pela API.
+Cada linha é uma demanda registrada pelo cidadão (buraco, lâmpada apagada, poda, capina etc.). O pipeline consulta a API de datastore do CKAN, que dispensa chave de API. Se ela falhar, baixa o CSV e, por último, usa o arquivo local `data/156_cco_diario_2026.csv`.
+
+Para usar outro ano, troque `RESOURCE_ID`, `PACKAGE_ID` e `NOME_ARQUIVO_CSV` em `src/extract.py` e `ANO_ALVO` em `src/transform.py`.
+
+### Campos originais (13)
+
+`GRUPOSERVICO_CODIGO`, `GRUPOSERVICO_DESCRICAO`, `SERVICO_CODIGO`, `SERVICO_DESCRICAO`, `LOGRADOURO`, `NUMERO`, `BAIRRO`, `RPA`, `DATA_DEMANDA`, `SITUACAO`, `DATA_ULT_SITUACAO`, `latitude`, `longitude`.
+
+### Tabelas geradas (SQLite e NeonDB)
+
+**`emlurb_156_demandas`** (uma linha por demanda, chave primária `id_demanda`):
+
+| Campo | Descrição |
+| --- | --- |
+| `id_demanda` | ID determinístico (hash de serviço + endereço + data + coordenadas); não muda quando a situação muda |
+| `grupo_servico_codigo`, `grupo_servico`, `servico_codigo`, `servico` | Tipo de demanda |
+| `logradouro`, `numero`, `bairro`, `rpa` | Localização (RPA de 1 a 6) |
+| `latitude`, `longitude`, `tem_coordenadas` | Coordenadas validadas dentro de Recife; inválidas viram nulas |
+| `data_demanda`, `ano`, `mes`, `ano_mes`, `dia_semana`, `hora` | Campos de tempo para filtros e gráficos |
+| `situacao`, `situacao_categoria`, `concluida` | Situação original e categoria (Concluída, Em andamento, Cancelada, Outros) |
+| `data_ultima_situacao`, `tempo_resolucao_dias` | Tempo até a conclusão (só para demandas concluídas) |
+
+**`emlurb_156_agregado_mensal`**: total de demandas e tempo médio de resolução por `ano_mes`, `rpa`, `bairro`, `grupo_servico` e `situacao_categoria`. É leve para alimentar o dashboard do app mobile sem trazer todas as demandas.
+
+### Regras de transformação
+
+- Nomes de colunas padronizados em minúsculas; textos sem espaços extras; "NULL"/"NÃO INFORMADO"/vazio viram nulo.
+- Textos todo em MAIÚSCULAS passam para caixa de título ("RUA DO FUTURO" vira "Rua do Futuro").
+- Datas aceitam formato ISO e brasileiro; só ficam demandas de 2026.
+- Coordenadas com vírgula decimal são convertidas; latitude/longitude trocadas são corrigidas; fora de Recife viram nulas.
+- Duplicatas removidas pelo `id_demanda`.
+- A categoria da situação é definida por palavras-chave em `Transform.CATEGORIAS_SITUACAO`. Ao rodar, o pipeline imprime cada situação encontrada e a categoria atribuída; ajuste a lista se algo cair em "Outros".
 
 ## Como funciona
 
 ```
-CSV (API dados.gov.br ou arquivo local em data/)
+API do portal (CKAN)  ->  CSV online  ->  CSV local em data/   (fallbacks, nessa ordem)
         |
         v
-   Extract (baixa ou carrega o CSV)
+   Extract (baixa os atendimentos)
         |
         v
-Load.load_mongo  ->  MongoDB (coleção bruta)
+Load.load_mongo  ->  MongoDB (coleção bruta EMLURB_156_DEMANDAS_2026)
         |
         v
-Extract.extract_collection_from_mongo (relê + filtra RM Recife)
+Extract.extract_collection_from_mongo (relê o bruto)
         |
         v
-   Transform (limpeza / DataFrame)
+   Transform (limpeza, validação, campos derivados, agregação)
         |
-        v
-Load.load_neon  ->  NeonDB/PostgreSQL (tabela final)
+        +--> Load.load_sqlite  ->  data/db/smart_city.db
+        |
+        +--> Load.load_neon    ->  NeonDB/PostgreSQL
 ```
-
-Se o download direto da API falhar, o `run_etl.py` usa automaticamente o CSV salvo em `data/mobilidade-fichas-projetos.csv`.
 
 ## Instalação
 
@@ -78,7 +105,6 @@ python3 -m pip install -r requirements.txt
 Crie um arquivo `.env` na raiz do projeto:
 
 ```
-CHAVE_API_DADOS_ABERTOS="sua_chave_de_api_aqui"
 MONGODB_URI="mongodb+srv://usuario:senha@cluster0.xxxxx.mongodb.net/?retryWrites=true&w=majority"
 NEON_DATABASE_URL="postgresql://usuario:senha@servidor.neon.tech/neondb?sslmode=require"
 ```
@@ -118,35 +144,55 @@ source .venv/bin/activate
 python3 run_etl.py
 ```
 
-Isso grava os dados brutos na coleção `MOBILIDADE_FICHAS_PROJETOS` (banco `SMART_CITY`) no MongoDB Atlas, recupera e transforma os registros da RM Recife e salva o resultado na tabela `mobilidade_fichas_projetos` do NeonDB. Ao final, o programa consulta a tabela no Neon para confirmar a quantidade persistida.
+### Gerar só o banco SQLite (sem MongoDB nem Neon)
+
+Para criar `data/db/smart_city.db` sem precisar de credenciais no `.env`:
+
+```bash
+python run_etl.py --somente-sqlite
+```
+
+Depois é só abrir o arquivo no VS Code (por exemplo, com a extensão SQLite Viewer).
+
+### Filtrar por RPA
+
+A extração aceita uma das 6 RPAs do Recife (1 Centro, 2 Norte, 3 Noroeste, 4 Oeste, 5 Sudoeste, 6 Sul). Qualquer outro valor é rejeitado:
+
+```bash
+python run_etl.py --rpa 6
+python run_etl.py --somente-sqlite --rpa 6
+```
+
+Isso grava os dados brutos na coleção `EMLURB_156_DEMANDAS_2026` (banco `SMART_CITY`) no MongoDB Atlas, transforma os registros e salva as tabelas `emlurb_156_demandas` e `emlurb_156_agregado_mensal` no SQLite (`data/db/smart_city.db`, para abrir no VS Code) e no NeonDB. Ao final, o programa consulta as tabelas para confirmar a quantidade persistida.
 
 > **Atenção:** cada execução substitui o conteúdo da coleção bruta
-> no MongoDB e da tabela final no NeonDB.
+> no MongoDB e das tabelas finais no SQLite e no NeonDB.
 
 ## Executando os testes
 
 ### Windows
 
 ```powershell
-python -m unittest discover -s tests -v
+python -m unittest discover -s tests -t . -v
 ```
 
 ### Linux / WSL
 
 ```bash
 source .venv/bin/activate
-python -m unittest discover -s tests -v
+python -m unittest discover -s tests -t . -v
 ```
 
 Se o comando `python` não estiver disponível, use:
 
 ```bash
 source .venv/bin/activate
-python3 -m unittest discover -s tests -v
+python3 -m unittest discover -s tests -t . -v
 ```
 
-Os testes verificam o filtro regional, a preservação dos códigos de projeto
-alfanuméricos e a validação básica da URL do Neon.
+Os testes verificam a paginação da API, a leitura do CSV (encoding e delimitador),
+a limpeza dos dados (datas, coordenadas, nulos, duplicatas, categorias de situação),
+a agregação, a gravação no SQLite e a validação básica da URL do Neon.
 
 ## Estrutura dos arquivos
 
@@ -155,11 +201,12 @@ etl-smart-city/
 ├── .env                          # credenciais locais (não versionado)
 ├── .env.example                  # modelo das variáveis de ambiente
 ├── data/
-│   └── mobilidade-fichas-projetos.csv   # CSV local (fallback)
+│   ├── 156_cco_diario_2026.csv   # CSV local (fallback, opcional)
+│   └── db/smart_city.db          # SQLite gerado pelo ETL (não versionado)
 ├── src/
-│   ├── extract.py                # Extract: API + CSV local + leitura do MongoDB
-│   ├── transform.py              # Transform: limpeza e organização em DataFrame
-│   └── load.py                   # Load: persistência no MongoDB e no NeonDB
+│   ├── extract.py                # Extract: API CKAN + CSV + CSV local + leitura do MongoDB
+│   ├── transform.py              # Transform: limpeza, campos derivados e agregação
+│   └── load.py                   # Load: persistência no MongoDB, SQLite e NeonDB
 ├── tests/                         # testes automatizados
 ├── run_etl.py                    # Orquestra o pipeline completo
 ├── requirements.txt

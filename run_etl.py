@@ -1,4 +1,6 @@
+import argparse
 from pathlib import Path
+from typing import Optional
 
 import requests
 
@@ -6,102 +8,94 @@ from src.extract import Extract
 from src.load import Load
 from src.transform import Transform
 
-REGIAO_METROPOLITANA = "RM Recife"
 RAIZ_PROJETO = Path(__file__).resolve().parent
-CAMINHO_CSV_LOCAL = RAIZ_PROJETO / "data" / "mobilidade-fichas-projetos.csv"
+CAMINHO_CSV_LOCAL = RAIZ_PROJETO / "data" / "156_cco_diario_2026.csv"
 
 
-def extrair_fichas_mobilidade(ext: Extract) -> list:
+def extrair_demandas_156(ext: Extract, rpa: Optional[int] = None) -> list:
     """
-    Baixa as fichas de mobilidade da API; se o download falhar, usa o
-    CSV local como alternativa.
+    Baixa os atendimentos do 156 pela API do Portal de Dados do Recife.
+    Se a API falhar, tenta o download do CSV e, por último, o CSV local.
 
     Parâmetros:
         ext: instância de Extract já inicializada.
+        rpa: código da RPA (1 a 6) para filtrar; None traz todas.
 
     Retorno:
-        Lista de dicionários com os projetos de mobilidade.
+        Lista de dicionários com os atendimentos.
     """
 
     try:
-        return ext.baixar_mobilidade_fichas_projetos()
+        return ext.baixar_demandas_api(rpa=rpa)
     except requests.exceptions.RequestException as erro:
-        print(f"Falha ao baixar da API ({erro}).")
+        print(f"Falha ao consultar a API ({erro}). Tentando o download do CSV.")
+
+    try:
+        return ext.baixar_demandas_csv(rpa=rpa)
+    except requests.exceptions.RequestException as erro:
+        print(f"Falha ao baixar o CSV ({erro}).")
         print(f"Usando o CSV local em '{CAMINHO_CSV_LOCAL}'.")
-        return ext.carregar_mobilidade_fichas_projetos_local(CAMINHO_CSV_LOCAL)
+        return ext.carregar_demandas_local(CAMINHO_CSV_LOCAL, rpa=rpa)
 
 
-def main() -> None:
+def titulo_etapa(texto: str) -> None:
+    print()
+    print("=" * 60)
+    print(texto)
+    print("=" * 60)
+
+
+def main(somente_sqlite: bool = False, rpa: Optional[int] = None) -> None:
     """
-    Executa o pipeline completo de ETL.
+    Executa o pipeline de ETL.
+
+    Parâmetros:
+        somente_sqlite: gera apenas o banco SQLite local (data/db/smart_city.db),
+            sem MongoDB e sem NeonDB, portanto sem precisar do .env.
+        rpa: código da RPA (1 a 6) para filtrar a extração; None traz todas.
     """
 
     ext = None
     ld = None
 
     try:
-        ext = Extract()
-        ld = Load()
+        ext = Extract(usar_mongo=not somente_sqlite)
+        ld = Load(somente_sqlite=somente_sqlite)
         transformer = Transform()
 
-        # ETAPA 1 - EXTRAÇÃO
-
-        print()
-        print("=" * 60)
-        print("ETAPA 1 - EXTRAÇÃO")
-        print("=" * 60)
-
-        data = extrair_fichas_mobilidade(ext)
-
+        titulo_etapa("ETAPA 1 - EXTRAÇÃO (Central 156 / EMLURB - 2026)")
+        data = extrair_demandas_156(ext, rpa)
         print(f"Registros extraídos: {len(data)}")
 
-        # ETAPA 2 - CARGA DO DADO BRUTO NO MONGODB
-        print()
-        print("=" * 60)
-        print("ETAPA 2 - CARGA DO DADO BRUTO NO MONGODB")
-        print("=" * 60)
+        if somente_sqlite:
+            data_mongo = data
+        else:
+            titulo_etapa("ETAPA 2 - CARGA DO DADO BRUTO NO MONGODB")
+            ld.load_mongo(data)
 
-        ld.load_mongo(data)
+            titulo_etapa("ETAPA 3 - LEITURA DO DADO BRUTO NO MONGODB")
+            data_mongo = ext.extract_collection_from_mongo()
 
-        # ETAPA 3 - LEITURA E FILTRO
-        print()
-        print("=" * 60)
-        print("ETAPA 3 - LEITURA E FILTRO")
-        print("=" * 60)
+        titulo_etapa("ETAPA 4 - TRANSFORMAÇÃO")
+        df = transformer.transform_demandas_156(data_mongo)
+        df_agregado = transformer.agregar_para_dashboard(df)
 
-        data_mongo = ext.extract_collection_from_mongo()
+        titulo_etapa("ETAPA 5 - CARGA NO SQLITE (local)")
+        total_sqlite = ld.load_sqlite(df, df_agregado)
 
-        data_recife = ext.filtrar_por_regiao_metropolitana(
-            data_mongo,
-            REGIAO_METROPOLITANA,
-        )
+        total_neon = None
+        if not somente_sqlite:
+            titulo_etapa("ETAPA 6 - CARGA NO NEONDB")
+            total_neon = ld.load_neon(df, df_agregado)
 
-        # ETAPA 4 - TRANSFORMAÇÃO
-        print()
-        print("=" * 60)
-        print("ETAPA 4 - TRANSFORMAÇÃO")
-        print("=" * 60)
-
-        df = transformer.transform_mobilidade_fichas_projetos(data_recife)
-
-        # ETAPA 5 - CARGA NO NEONDB
-        print()
-        print("=" * 60)
-        print("ETAPA 5 - CARGA NO NEONDB")
-        print("=" * 60)
-
-        total_neon = ld.load_neon(df)
-
-        # RESULTADO FINAL
-        print()
-        print("=" * 60)
-        print("PIPELINE EXECUTADO COM SUCESSO!")
-        print("=" * 60)
-
-        print(f"Dados brutos no MongoDB: {len(data_mongo)}")
-        print(f"Dados da {REGIAO_METROPOLITANA}: " f"{len(data_recife)}")
-        print(f"Dados transformados: {len(df)}")
-        print(f"Dados confirmados no NeonDB: {total_neon}")
+        titulo_etapa("PIPELINE EXECUTADO COM SUCESSO!")
+        print(f"Registros brutos lidos: {len(data_mongo)}")
+        print(f"Demandas transformadas: {len(df)}")
+        print(f"Linhas na tabela agregada: {len(df_agregado)}")
+        print(f"Demandas confirmadas no SQLite: {total_sqlite}")
+        if total_neon is not None:
+            print(f"Demandas confirmadas no NeonDB: {total_neon}")
+        print(f"Banco SQLite: {ld.CAMINHO_SQLITE}")
 
     finally:
         if ld is not None:
@@ -111,4 +105,16 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="ETL Smart City - EMLURB 156")
+    parser.add_argument(
+        "--somente-sqlite",
+        action="store_true",
+        help="gera só o SQLite local, sem MongoDB nem NeonDB",
+    )
+    parser.add_argument(
+        "--rpa",
+        type=int,
+        help="filtra a extração por uma RPA do Recife (1 a 6)",
+    )
+    args = parser.parse_args()
+    main(somente_sqlite=args.somente_sqlite, rpa=args.rpa)
