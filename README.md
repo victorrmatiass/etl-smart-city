@@ -163,6 +163,21 @@ python run_etl.py --rpa 6
 python run_etl.py --somente-sqlite --rpa 6
 ```
 
+### Executar com Prefect
+
+O arquivo `orchestration_prefect.py` organiza a extração, a carga bruta no
+MongoDB, a transformação e as cargas no SQLite e no NeonDB em tarefas Prefect.
+Ele reutiliza as classes e os fallbacks do ETL atual. Instale as dependências
+do projeto e execute, por exemplo:
+
+```powershell
+python -m pip install -r requirements.txt
+python orchestration_prefect.py --somente-sqlite
+```
+
+As opções `--somente-sqlite` e `--rpa` têm o mesmo comportamento descrito acima.
+No modo SQLite-only, as etapas do MongoDB e do NeonDB são ignoradas.
+
 Isso grava os dados brutos na coleção `EMLURB_156_DEMANDAS_2026` (banco `SMART_CITY`) no MongoDB Atlas, transforma os registros e salva as tabelas `emlurb_156_demandas` e `emlurb_156_agregado_mensal` no SQLite (`data/db/smart_city.db`, para abrir no VS Code) e no NeonDB. Ao final, o programa consulta as tabelas para confirmar a quantidade persistida.
 
 > **Atenção:** cada execução substitui o conteúdo da coleção bruta
@@ -209,6 +224,7 @@ etl-smart-city/
 │   └── load.py                   # Load: persistência no MongoDB, SQLite e NeonDB
 ├── tests/                         # testes automatizados
 ├── run_etl.py                    # Orquestra o pipeline completo
+├── orchestration_prefect.py      # Executa o pipeline atual como um flow Prefect
 ├── requirements.txt
 └── README.md
 ```

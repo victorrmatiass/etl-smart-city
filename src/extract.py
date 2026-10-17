@@ -2,14 +2,13 @@ import csv
 import io
 import json
 import os
-from pathlib import Path
-from typing import Any, Dict, List, Optional
-
 import certifi
 import requests
+from pathlib import Path
 from dotenv import load_dotenv
 from pymongo import MongoClient
 from pymongo.server_api import ServerApi
+from typing import Any, Dict, List, Optional
 
 RAIZ_PROJETO = Path(__file__).resolve().parents[1]
 load_dotenv(RAIZ_PROJETO / ".env")
