@@ -1,14 +1,14 @@
 import csv
 import io
+import json
 import os
-from pathlib import Path
-from typing import Any, Dict, List
-
 import certifi
+import requests
+from pathlib import Path
 from dotenv import load_dotenv
 from pymongo import MongoClient
 from pymongo.server_api import ServerApi
-import requests
+from typing import Any, Dict, List, Optional
 
 RAIZ_PROJETO = Path(__file__).resolve().parents[1]
 load_dotenv(RAIZ_PROJETO / ".env")
@@ -16,81 +16,50 @@ load_dotenv(RAIZ_PROJETO / ".env")
 
 class Extract:
     """
-    Responsável por extrair os dados públicos de mobilidade urbana
-    utilizados no projeto Smart City.
+    Responsável por extrair os atendimentos da Central 156 da EMLURB
+    (Prefeitura do Recife), publicados no Portal de Dados Abertos do Recife.
     """
 
-    # Configurações da fonte de dados
-    DADOS_GOV_BR_BASE_URL = "https://dados.gov.br"
-    DADOS_GOV_BR_DATASET_API = "/dados/api/publico/conjuntos-dados"
-    API_KEY_ENV = "CHAVE_API_DADOS_ABERTOS"
-
-    # Configurações do MongoDB
-    MONGODB_URI_ENV = "MONGODB_URI"
-    MONGO_DB = "SMART_CITY"
-    MONGO_COLLECTION = "MOBILIDADE_FICHAS_PROJETOS"
-
-    # Recursos disponíveis para extração
-    RECURSOS_CSV = {
-        "mobilidade_fichas_projetos": {
-            "dataset_id": "cf41fb63-4496-43cb-a043-08998291c858",
-            "resource_id": "ed69dbee-4eda-4831-9492-d41ea27ba8d9",
-            "arquivo": "mobilidade-fichas-projetos.csv",
-            "delimitador": ";",
-            "encoding": "cp1252",
-        },
+    # Conjunto fechado de opções da API: as 6 Regiões Político-Administrativas
+    # (RPAs) do Recife. Chave = código da RPA; valor = nome da região.
+    RPAS = {
+        1: "Centro",
+        2: "Norte",
+        3: "Noroeste",
+        4: "Oeste",
+        5: "Sudoeste",
+        6: "Sul",
     }
 
-    # Regiões metropolitanas disponíveis no dataset
-    REGIOES_METROPOLITANAS = {
-        "RIDE Distrito Federal": "RIDEDF",
-        "RIDE Teresina": "RIDEGT",
-        "RM Baixada Santista": "RMBS",
-        "RM Belo Horizonte": "RMBH",
-        "RM Belém": "RMB",
-        "RM Campinas": "RMC",
-        "RM Curitiba": "RMC",
-        "RM Florianópolis": "RMF",
-        "RM Fortaleza": "RMF",
-        "RM Goiânia": "RMG",
-        "RM Grande Vitória": "RMGV",
-        "RM João Pessoa": "RMJP",
-        "RM Maceió": "RMM",
-        "RM Manaus": "RMM",
-        "RM Natal": "RMN",
-        "RM Porto Alegre": "RMPA",
-        "RM Recife": "RMR",
-        "RM Rio de Janeiro": "RMRJ",
-        "RM Salvador": "RMS",
-        "RM São Luís": "RMGSL",
-        "RM São Paulo": "RMSP",
-    }
-
-    def __init__(self) -> None:
+    def __init__(self, usar_mongo: bool = True) -> None:
         """
-        Inicializa o extrator, configura a chave de API (opcional) e a
-        conexão com o MongoDB.
+        Inicializa o extrator, os valores fixos da API e, opcionalmente,
+        a conexão com o MongoDB.
+
+        Parâmetros:
+            usar_mongo: se False, não exige nem abre conexão com o MongoDB
+                (modo "somente SQLite").
         """
 
-        self.dados_gov_br_base_url = self.DADOS_GOV_BR_BASE_URL
-        self.dados_gov_br_dataset_api = self.DADOS_GOV_BR_DATASET_API
-        self.mongodb_uri_env = self.MONGODB_URI_ENV
-        self.mongo_db = self.MONGO_DB
-        self.mongo_collection = self.MONGO_COLLECTION
+        # Valores fixos da API (CKAN do Portal de Dados Abertos do Recife)
+        self.ckan_base_url = "https://dados.recife.pe.gov.br"
+        self.datastore_api = "/api/3/action/datastore_search"
+        self.resource_id = "80c5b3cd-d4f7-466e-9031-e636ef56dd99"
+        self.package_id = "331e88a9-d878-464b-b0bb-cb803d7091b3"
+        self.nome_arquivo_csv = "156_cco_diario_2026.csv"
+        self.campo_rpa = "RPA"
+        self.tamanho_pagina = 10_000
+        self.timeout_segundos = 60
 
-        self.api_key = os.getenv(self.API_KEY_ENV, "")
-        if not self.api_key:
-            print(
-                f"Aviso: {self.API_KEY_ENV} não foi definida no .env. "
-                "O download do CSV pela API pode falhar; nesse caso, use "
-                "carregar_mobilidade_fichas_projetos_local com o arquivo "
-                "baixado manualmente."
-            )
+        # Configurações do MongoDB
+        self.mongodb_uri_env = "MONGODB_URI"
+        self.mongo_db = "SMART_CITY"
+        self.mongo_collection = "EMLURB_156_DEMANDAS_2026"
 
-        self.headers = {
-            "accept": "application/json",
-            "chave-api-dados-abertos": self.api_key,
-        }
+        self.client = None
+
+        if not usar_mongo:
+            return
 
         self.mongo_uri = os.getenv(self.mongodb_uri_env)
 
@@ -105,189 +74,181 @@ class Extract:
 
     def close(self) -> None:
         """Encerra a conexão com o MongoDB."""
-        self.client.close()
+        if self.client is not None:
+            self.client.close()
 
-    def baixar_recurso_csv(
-        self,
-        recurso: str,
-    ) -> List[Dict[str, Any]]:
+    @property
+    def url_csv(self) -> str:
+        """URL pública de download do CSV de 2026."""
+
+        return (
+            f"{self.ckan_base_url}/dataset/{self.package_id}"
+            f"/resource/{self.resource_id}/download/{self.nome_arquivo_csv}"
+        )
+
+    def _validar_rpa(self, rpa: Optional[int]) -> None:
         """
-        Baixa um recurso CSV diretamente do portal dados.gov.br.
+        Garante que a RPA informada existe em `RPAS`.
 
         Parâmetros:
-            recurso: nome do recurso disponível em RECURSOS_CSV.
-
-        Retorno:
-            Lista de dicionários contendo os registros extraídos.
+            rpa: código da RPA (1 a 6) ou None para não filtrar.
         """
 
-        if recurso not in self.RECURSOS_CSV:
-            raise ValueError(
-                f"Recurso CSV inválido: {recurso!r}. "
-                f"Opções disponíveis: {list(self.RECURSOS_CSV)}"
+        if rpa is not None and rpa not in self.RPAS:
+            raise ValueError(f"RPA inválida: {rpa!r}. Opções disponíveis: {self.RPAS}")
+
+    def _filtrar_por_rpa(
+        self,
+        linhas: List[Dict[str, Any]],
+        rpa: Optional[int],
+    ) -> List[Dict[str, Any]]:
+        """Filtra, em memória, as linhas de um CSV pela RPA (se informada)."""
+
+        if rpa is None:
+            return linhas
+
+        chave = self.campo_rpa.lower()
+
+        def mesma_rpa(linha: Dict[str, Any]) -> bool:
+            valores = {str(k).lower(): v for k, v in linha.items()}
+            try:
+                return int(float(str(valores.get(chave, "")).replace(",", "."))) == rpa
+            except ValueError:
+                return False
+
+        return [linha for linha in linhas if mesma_rpa(linha)]
+
+    def baixar_demandas_api(self, rpa: Optional[int] = None) -> List[Dict[str, Any]]:
+        """
+        Baixa os atendimentos do 156 pela API de datastore do CKAN
+        (requests.get + raise_for_status), paginando os resultados.
+
+        Parâmetros:
+            rpa: código da RPA (1 a 6, ver `RPAS`) para filtrar a consulta.
+                Se None, traz todas as RPAs.
+
+        Retorno:
+            Lista de dicionários com os atendimentos do 156.
+        """
+
+        self._validar_rpa(rpa)
+
+        url = f"{self.ckan_base_url}{self.datastore_api}"
+        registros: List[Dict[str, Any]] = []
+        offset = 0
+
+        while True:
+            parametros: Dict[str, Any] = {
+                "resource_id": self.resource_id,
+                "limit": self.tamanho_pagina,
+                "offset": offset,
+            }
+
+            if rpa is not None:
+                parametros["filters"] = json.dumps({self.campo_rpa: rpa})
+
+            resposta = requests.get(
+                url, params=parametros, timeout=self.timeout_segundos
             )
+            resposta.raise_for_status()
 
-        info = self.RECURSOS_CSV[recurso]
+            corpo = resposta.json()
 
-        url_metadados = (
-            f"{self.dados_gov_br_base_url}"
-            f"{self.dados_gov_br_dataset_api}/"
-            f"{info['dataset_id']}"
-        )
+            if not corpo.get("success"):
+                raise requests.exceptions.RequestException(
+                    f"A API do CKAN retornou erro: {corpo.get('error')}"
+                )
 
-        response_metadados = requests.get(
-            url_metadados,
-            headers=self.headers,
-            timeout=30,
-        )
-        response_metadados.raise_for_status()
+            pagina = corpo["result"]["records"]
+            total = corpo["result"].get("total")
 
-        recursos = response_metadados.json().get("recursos", [])
-        recurso_encontrado = next(
-            (item for item in recursos if item.get("id") == info["resource_id"]),
-            None,
-        )
+            registros.extend(pagina)
+            offset += len(pagina)
 
-        if not recurso_encontrado or not recurso_encontrado.get("link"):
-            raise ValueError(
-                "O recurso solicitado não foi encontrado nos metadados "
-                f"do dados.gov.br: {recurso!r}."
-            )
+            if not pagina or (total is not None and offset >= total):
+                break
 
-        url_recurso = recurso_encontrado["link"]
+        # "_id" é o identificador interno do CKAN, sem valor analítico.
+        for registro in registros:
+            registro.pop("_id", None)
 
-        response = requests.get(url_recurso, timeout=60)
-        response.raise_for_status()
+        print("Dados extraídos com sucesso da API do Portal de Dados do Recife!")
+        print(f"Total de registros extraídos: {len(registros)}")
 
-        conteudo = response.content.decode(info["encoding"])
+        return registros
 
-        leitor = csv.DictReader(
-            io.StringIO(conteudo),
-            delimiter=info["delimitador"],
-        )
+    def baixar_demandas_csv(self, rpa: Optional[int] = None) -> List[Dict[str, Any]]:
+        """
+        Baixa o CSV completo diretamente do portal.
 
-        linhas = [dict(linha) for linha in leitor]
+        Parâmetros:
+            rpa: código da RPA (1 a 6, ver `RPAS`) para filtrar os registros.
+                Se None, mantém todas as RPAs.
 
-        print("Metadados consultados com sucesso na API do dados.gov.br!")
-        print("Dados extraídos com sucesso do recurso oficial!")
-        print(f"Recurso: {recurso}")
+        Retorno:
+            Lista de dicionários com os atendimentos do 156.
+        """
+
+        self._validar_rpa(rpa)
+
+        resposta = requests.get(self.url_csv, timeout=self.timeout_segundos)
+        resposta.raise_for_status()
+
+        linhas = self._filtrar_por_rpa(self._ler_csv_bytes(resposta.content), rpa)
+
+        print("CSV baixado com sucesso do Portal de Dados do Recife!")
         print(f"Total de registros extraídos: {len(linhas)}")
 
         return linhas
 
-    def baixar_mobilidade_fichas_projetos(
+    def carregar_demandas_local(
         self,
-    ) -> List[Dict[str, Any]]:
-        """
-        Baixa as fichas de projetos de mobilidade urbana do dados.gov.br.
-
-        Retorno:
-            Lista de dicionários com os projetos de mobilidade.
-        """
-
-        return self.baixar_recurso_csv("mobilidade_fichas_projetos")
-
-    def carregar_csv_local(
-        self,
-        recurso: str,
         caminho_arquivo: str,
+        rpa: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Lê, de um arquivo já baixado no disco, o mesmo recurso CSV de
-        `baixar_recurso_csv`. Serve como alternativa quando o download
-        direto do dados.gov.br não está disponível, reaproveitando a
-        mesma configuração de delimitador e encoding de RECURSOS_CSV.
+        Lê o CSV de um arquivo já baixado. Serve como alternativa quando
+        o portal está fora do ar.
 
         Parâmetros:
-            recurso: nome do recurso disponível em RECURSOS_CSV.
-            caminho_arquivo: caminho local do arquivo CSV já baixado.
+            caminho_arquivo: caminho local do CSV do 156.
+            rpa: código da RPA (1 a 6, ver `RPAS`) para filtrar os registros.
+                Se None, mantém todas as RPAs.
 
         Retorno:
-            Lista de dicionários contendo os registros lidos do arquivo.
+            Lista de dicionários com os atendimentos do 156.
         """
 
-        if recurso not in self.RECURSOS_CSV:
-            raise ValueError(
-                f"Recurso CSV inválido: {recurso!r}. "
-                f"Opções disponíveis: {list(self.RECURSOS_CSV)}"
-            )
+        self._validar_rpa(rpa)
 
-        info = self.RECURSOS_CSV[recurso]
-
-        with open(
-            caminho_arquivo,
-            "r",
-            encoding=info["encoding"],
-            newline="",
-        ) as arquivo:
-            leitor = csv.DictReader(
-                arquivo,
-                delimiter=info["delimitador"],
-            )
-            linhas = [dict(linha) for linha in leitor]
+        conteudo = Path(caminho_arquivo).read_bytes()
+        linhas = self._filtrar_por_rpa(self._ler_csv_bytes(conteudo), rpa)
 
         print(f"Dados carregados com sucesso do arquivo local '{caminho_arquivo}'!")
         print(f"Total de registros carregados: {len(linhas)}")
 
         return linhas
 
-    def carregar_mobilidade_fichas_projetos_local(
-        self,
-        caminho_arquivo: str,
-    ) -> List[Dict[str, Any]]:
+    @staticmethod
+    def _ler_csv_bytes(conteudo: bytes) -> List[Dict[str, Any]]:
         """
-        Atalho para carregar as fichas de mobilidade a partir de um
-        arquivo local, quando o download direto não está disponível.
-
-        Parâmetros:
-            caminho_arquivo: caminho do CSV baixado manualmente do
-                dados.gov.br.
-
-        Retorno:
-            Lista de dicionários com os projetos de mobilidade.
+        Converte os bytes de um CSV em lista de dicionários, detectando
+        encoding (UTF-8 com/sem BOM ou cp1252) e delimitador (; , ou tab).
         """
 
-        return self.carregar_csv_local(
-            "mobilidade_fichas_projetos",
-            caminho_arquivo,
-        )
+        try:
+            texto = conteudo.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            texto = conteudo.decode("cp1252")
 
-    def filtrar_por_regiao_metropolitana(
-        self,
-        dados: List[Dict[str, Any]],
-        regiao_metropolitana: str,
-    ) -> List[Dict[str, Any]]:
-        """
-        Filtra os projetos pertencentes a uma região metropolitana.
+        primeira_linha = texto.splitlines()[0] if texto else ""
+        delimitador = max(";,\t", key=primeira_linha.count)
 
-        Parâmetros:
-            dados: registros brutos extraídos.
-            regiao_metropolitana: região que será utilizada no filtro.
+        leitor = csv.DictReader(io.StringIO(texto, newline=""), delimiter=delimitador)
 
-        Retorno:
-            Lista contendo somente os registros da região informada.
-        """
+        return [dict(linha) for linha in leitor]
 
-        if regiao_metropolitana not in self.REGIOES_METROPOLITANAS:
-            raise ValueError(
-                f"Região metropolitana inválida: "
-                f"{regiao_metropolitana!r}. "
-                f"Opções disponíveis: "
-                f"{list(self.REGIOES_METROPOLITANAS)}"
-            )
-
-        dados_filtrados = [
-            linha for linha in dados if linha.get("rm") == regiao_metropolitana
-        ]
-
-        print(f"Região selecionada: {regiao_metropolitana}")
-        print("Registros encontrados para a região: " f"{len(dados_filtrados)}")
-
-        return dados_filtrados
-
-    def extract_collection_from_mongo(
-        self,
-    ) -> List[Dict[str, Any]]:
+    def extract_collection_from_mongo(self) -> List[Dict[str, Any]]:
         """
         Recupera os dados brutos armazenados no MongoDB.
 
@@ -299,7 +260,7 @@ class Extract:
 
         documentos = list(collection.find())
 
-        print(f"Dados lidos com sucesso da coleção " f"'{self.mongo_collection}'!")
-        print("Total de documentos recuperados: " f"{len(documentos)}")
+        print(f"Dados lidos com sucesso da coleção '{self.mongo_collection}'!")
+        print(f"Total de documentos recuperados: {len(documentos)}")
 
         return documentos

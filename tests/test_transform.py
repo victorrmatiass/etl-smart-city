@@ -3,30 +3,135 @@ import unittest
 from src.transform import Transform
 
 
+def registro(**extra):
+    base = {
+        "GRUPOSERVICO_CODIGO": "10",
+        "GRUPOSERVICO_DESCRICAO": "ILUMINAÇÃO PÚBLICA",
+        "SERVICO_CODIGO": "101",
+        "SERVICO_DESCRICAO": "LÂMPADA APAGADA",
+        "LOGRADOURO": "RUA DO FUTURO",
+        "NUMERO": "100",
+        "BAIRRO": "BOA VIAGEM",
+        "RPA": "6",
+        "DATA_DEMANDA": "2026-03-04T10:15:00",
+        "SITUACAO": "Concluído",
+        "DATA_ULT_SITUACAO": "2026-03-06T10:15:00",
+        "latitude": "-8,1200",
+        "longitude": "-34,9000",
+    }
+    base.update(extra)
+    return base
+
+
 class TransformTestCase(unittest.TestCase):
-    def test_preserva_codigo_de_projeto_alfanumerico(self) -> None:
-        dados = [
-            {
-                "_id": "mongo-id",
-                "rm": "RM Recife",
-                "cod_proj": "20302B",
-                "id_gpkg": "20302",
-                "invest_total": "123,45",
-            }
-        ]
-
-        df = Transform().transform_mobilidade_fichas_projetos(dados)
-
-        self.assertEqual(df.loc[0, "cod_proj"], "20302B")
-        self.assertEqual(str(df["cod_proj"].dtype), "string")
-        self.assertEqual(df.loc[0, "id_gpkg"], 20302)
-        self.assertEqual(df.loc[0, "invest_total"], 123.45)
-        self.assertNotIn("_id", df.columns)
+    def setUp(self) -> None:
+        self.t = Transform()
 
     def test_retorna_dataframe_vazio_sem_dados(self) -> None:
-        df = Transform().transform_mobilidade_fichas_projetos([])
+        self.assertTrue(self.t.transform_demandas_156([]).empty)
 
-        self.assertTrue(df.empty)
+    def test_falha_se_faltar_coluna_esperada(self) -> None:
+        with self.assertRaises(ValueError):
+            self.t.transform_demandas_156([{"BAIRRO": "X"}])
+
+    def test_limpeza_e_tipos(self) -> None:
+        df = self.t.transform_demandas_156([{"_id": "mongo", **registro()}])
+
+        linha = df.iloc[0]
+        self.assertNotIn("_id", df.columns)
+        self.assertEqual(linha["bairro"], "Boa Viagem")
+        self.assertEqual(linha["logradouro"], "Rua do Futuro")
+        self.assertEqual(linha["grupo_servico"], "Iluminação Pública")
+        self.assertEqual(linha["rpa"], 6)
+        self.assertEqual(linha["latitude"], -8.12)  # vírgula decimal
+        self.assertTrue(linha["tem_coordenadas"])
+        self.assertEqual(linha["ano_mes"], "2026-03")
+        self.assertEqual(linha["dia_semana"], "Quarta-feira")
+        self.assertEqual(linha["hora"], 10)
+        self.assertTrue(linha["concluida"])
+        self.assertAlmostEqual(linha["tempo_resolucao_dias"], 2.0)
+
+    def test_data_no_formato_brasileiro(self) -> None:
+        df = self.t.transform_demandas_156(
+            [registro(DATA_DEMANDA="04/03/2026 10:15", DATA_ULT_SITUACAO="")]
+        )
+
+        self.assertEqual(df.loc[0, "ano_mes"], "2026-03")
+        self.assertTrue(df["data_ultima_situacao"].isna().all())
+
+    def test_mantem_apenas_2026(self) -> None:
+        df = self.t.transform_demandas_156(
+            [registro(), registro(DATA_DEMANDA="2025-12-31T23:00:00")]
+        )
+
+        self.assertEqual(len(df), 1)
+
+    def test_remove_duplicatas_e_gera_id_estavel(self) -> None:
+        a = self.t.transform_demandas_156([registro(), registro()])
+        b = self.t.transform_demandas_156([registro(SITUACAO="Cancelado")])
+
+        self.assertEqual(len(a), 1)
+        # A situação muda com o tempo, mas o ID da demanda não.
+        self.assertEqual(a.loc[0, "id_demanda"], b.loc[0, "id_demanda"])
+
+    def test_coordenadas_invalidas_viram_nulas_e_trocadas_sao_corrigidas(self) -> None:
+        df = self.t.transform_demandas_156(
+            [
+                registro(latitude="0", longitude="0", NUMERO="1"),
+                registro(latitude="-34.9", longitude="-8.1", NUMERO="2"),
+                registro(latitude="-23.5", longitude="-46.6", NUMERO="3"),
+            ]
+        ).set_index("numero")
+
+        self.assertFalse(df.loc["1", "tem_coordenadas"])
+        self.assertTrue(df["latitude"].isna()["1"])
+        self.assertEqual(df.loc["2", "latitude"], -8.1)
+        self.assertEqual(df.loc["2", "longitude"], -34.9)
+        self.assertFalse(df.loc["3", "tem_coordenadas"])
+
+    def test_categorias_de_situacao(self) -> None:
+        cat = self.t._categorizar_situacao
+        self.assertEqual(cat("Concluído"), "Concluída")
+        self.assertEqual(cat("Em Execução"), "Em andamento")
+        self.assertEqual(cat("Aguardando vistoria"), "Em andamento")
+        self.assertEqual(cat("Cancelado"), "Cancelada")
+        self.assertEqual(cat("Algo novo"), "Outros")
+        self.assertIsNone(cat(None))
+
+    def test_valores_nulos_e_sem_numero(self) -> None:
+        df = self.t.transform_demandas_156(
+            [registro(BAIRRO="NULL", NUMERO="S/N", RPA="99")]
+        )
+
+        self.assertTrue(df["bairro"].isna().all())
+        self.assertEqual(df.loc[0, "numero"], "S/N")
+        self.assertTrue(df["rpa"].isna().all())
+
+    def test_nulos_em_varias_colunas_nao_quebram(self) -> None:
+        df = self.t.transform_demandas_156(
+            [
+                registro(NUMERO="1"),
+                registro(NUMERO="2", BAIRRO="", SITUACAO="", LOGRADOURO="NULL"),
+            ]
+        )
+
+        self.assertEqual(len(df), 2)
+        self.assertEqual(df["bairro"].isna().sum(), 1)
+        self.assertEqual(df["situacao_categoria"].isna().sum(), 1)
+
+    def test_agregado_soma_total(self) -> None:
+        df = self.t.transform_demandas_156(
+            [
+                registro(NUMERO="1"),
+                registro(NUMERO="2"),
+                registro(NUMERO="3", SITUACAO="Cancelado"),
+            ]
+        )
+
+        agregado = self.t.agregar_para_dashboard(df)
+
+        self.assertEqual(agregado["total"].sum(), 3)
+        self.assertEqual(len(agregado), 2)
 
 
 if __name__ == "__main__":
