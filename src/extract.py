@@ -1,17 +1,14 @@
 import csv
 import io
 import json
-import os
 import certifi
 import requests
 from pathlib import Path
-from dotenv import load_dotenv
 from pymongo import MongoClient
 from pymongo.server_api import ServerApi
 from typing import Any, Dict, List, Optional
 
-RAIZ_PROJETO = Path(__file__).resolve().parents[1]
-load_dotenv(RAIZ_PROJETO / ".env")
+from src import config
 
 
 class Extract:
@@ -42,26 +39,28 @@ class Extract:
         """
 
         # Valores fixos da API (CKAN do Portal de Dados Abertos do Recife)
-        self.ckan_base_url = "https://dados.recife.pe.gov.br"
+        self.ckan_base_url = config.CKAN_BASE_URL
         self.datastore_api = "/api/3/action/datastore_search"
-        self.resource_id = "80c5b3cd-d4f7-466e-9031-e636ef56dd99"
-        self.package_id = "331e88a9-d878-464b-b0bb-cb803d7091b3"
-        self.nome_arquivo_csv = "156_cco_diario_2026.csv"
+        self.resource_id = config.RESOURCE_ID
+        self.package_id = config.PACKAGE_ID
+        self.nome_arquivo_csv = config.NOME_ARQUIVO_CSV
+        self.origem = "desconhecida"
+        self.total_fonte = None
         self.campo_rpa = "RPA"
         self.tamanho_pagina = 10_000
         self.timeout_segundos = 60
 
         # Configurações do MongoDB
         self.mongodb_uri_env = "MONGODB_URI"
-        self.mongo_db = "SMART_CITY"
-        self.mongo_collection = "EMLURB_156_DEMANDAS_2026"
+        self.mongo_db = config.MONGO_DB
+        self.mongo_collection = config.MONGO_COLLECTION
 
         self.client = None
 
         if not usar_mongo:
             return
 
-        self.mongo_uri = os.getenv(self.mongodb_uri_env)
+        self.mongo_uri = config.MONGODB_URI
 
         if not self.mongo_uri:
             raise ValueError(f"Variável {self.mongodb_uri_env} não encontrada no .env.")
@@ -142,6 +141,7 @@ class Extract:
                 "resource_id": self.resource_id,
                 "limit": self.tamanho_pagina,
                 "offset": offset,
+                "sort": "_id asc",
             }
 
             if rpa is not None:
@@ -165,12 +165,25 @@ class Extract:
             registros.extend(pagina)
             offset += len(pagina)
 
+            if not pagina and total is not None and offset < total:
+                raise requests.exceptions.RequestException(
+                    "Paginação incompleta: API encerrou antes do total anunciado."
+                )
             if not pagina or (total is not None and offset >= total):
                 break
 
-        # "_id" é o identificador interno do CKAN, sem valor analítico.
+        if total is not None and len(registros) != total:
+            raise requests.exceptions.RequestException(
+                "Contagem extraída difere do total anunciado pela API."
+            )
+
+        # Preserva a identidade da linha CKAN sem conflitar com o _id do Mongo.
         for registro in registros:
-            registro.pop("_id", None)
+            if "_id" in registro:
+                registro["id_origem"] = registro.pop("_id")
+
+        self.origem = "API CKAN"
+        self.total_fonte = len(registros)
 
         print("Dados extraídos com sucesso da API do Portal de Dados do Recife!")
         print(f"Total de registros extraídos: {len(registros)}")
@@ -195,6 +208,8 @@ class Extract:
         resposta.raise_for_status()
 
         linhas = self._filtrar_por_rpa(self._ler_csv_bytes(resposta.content), rpa)
+        self.origem = "CSV online"
+        self.total_fonte = len(linhas)
 
         print("CSV baixado com sucesso do Portal de Dados do Recife!")
         print(f"Total de registros extraídos: {len(linhas)}")
@@ -223,6 +238,8 @@ class Extract:
 
         conteudo = Path(caminho_arquivo).read_bytes()
         linhas = self._filtrar_por_rpa(self._ler_csv_bytes(conteudo), rpa)
+        self.origem = "CSV local"
+        self.total_fonte = len(linhas)
 
         print(f"Dados carregados com sucesso do arquivo local '{caminho_arquivo}'!")
         print(f"Total de registros carregados: {len(linhas)}")
@@ -263,4 +280,27 @@ class Extract:
         print(f"Dados lidos com sucesso da coleção '{self.mongo_collection}'!")
         print(f"Total de documentos recuperados: {len(documentos)}")
 
+        return documentos
+
+    def extract_latest_from_mongo(self, carga_id=None) -> List[Dict[str, Any]]:
+        """Lê só o lote completo mais recente (ou o lote desta execução).
+
+        O manifesto só é inserido após todos os documentos: uma carga parcial
+        nunca substitui uma completa. Documentos antigos sem carimbo permanecem.
+        """
+        db = self.client[self.mongo_db]
+        filtro = {"carga_id": carga_id} if carga_id else {}
+        carga = db[config.MONGO_CARGAS].find_one(filtro, sort=[("data_extracao", -1)])
+        if carga is None:
+            raise ValueError(
+                "Nenhuma carga completa com data_extracao encontrada. Execute a extração primeiro."
+            )
+        documentos = list(
+            db[self.mongo_collection].find({"carga_id": carga["carga_id"]})
+        )
+        if len(documentos) != carga["total"]:
+            raise ValueError(
+                "Carga bronze incompleta: contagem diferente do manifesto."
+            )
+        print(f"Carga {carga['carga_id']}: {len(documentos)} registros do bronze.")
         return documentos

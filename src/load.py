@@ -1,17 +1,18 @@
-import os
+from datetime import datetime, timezone
+from uuid import uuid4
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import certifi
 import pandas as pd
-from dotenv import load_dotenv
 from pymongo import MongoClient
 from pymongo.server_api import ServerApi
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
-RAIZ_PROJETO = Path(__file__).resolve().parents[1]
-load_dotenv(RAIZ_PROJETO / ".env")
+from src import config
+
+RAIZ_PROJETO = config.RAIZ_PROJETO
 
 
 class Load:
@@ -25,16 +26,16 @@ class Load:
 
     # Configurações do MongoDB
     MONGODB_URI_ENV = "MONGODB_URI"
-    MONGO_DB = "SMART_CITY"
-    MONGO_COLLECTION = "EMLURB_156_DEMANDAS_2026"
+    MONGO_DB = config.MONGO_DB
+    MONGO_COLLECTION = config.MONGO_COLLECTION
     MONGO_TAMANHO_LOTE = 5_000
 
     # Configurações do NeonDB (PostgreSQL)
     NEON_DATABASE_URL_ENV = "NEON_DATABASE_URL"
 
     # Tabelas finais (iguais no SQLite e no Neon)
-    TABELA_DEMANDAS = "emlurb_156_demandas"
-    TABELA_AGREGADO = "emlurb_156_agregado_mensal"
+    TABELA_DEMANDAS = config.TABELA_DEMANDAS
+    TABELA_AGREGADO = config.TABELA_AGREGADO
 
     # Banco SQLite local (a pasta data/db/ já está no .gitignore)
     CAMINHO_SQLITE = RAIZ_PROJETO / "data" / "db" / "smart_city.db"
@@ -71,12 +72,12 @@ class Load:
         if somente_sqlite:
             return
 
-        self.mongo_uri = os.getenv(self.mongodb_uri_env)
+        self.mongo_uri = config.MONGODB_URI
 
         if not self.mongo_uri:
             raise ValueError(f"Variável {self.mongodb_uri_env} não encontrada no .env.")
 
-        self.neon_database_url = os.getenv(self.neon_database_url_env)
+        self.neon_database_url = config.NEON_DATABASE_URL
 
         if not self.neon_database_url:
             raise ValueError(
@@ -88,35 +89,13 @@ class Load:
             server_api=ServerApi("1"),
             tlsCAFile=certifi.where(),
         )
-        self.neon_engine = create_engine(
-            self._sqlalchemy_neon_url(self.neon_database_url),
-            pool_pre_ping=True,
-        )
+        self.neon_engine = config.criar_engine_neon()
 
     @staticmethod
     def _sqlalchemy_neon_url(database_url: str) -> str:
         """Seleciona explicitamente o driver Psycopg 3 no SQLAlchemy."""
-
-        if database_url.startswith("postgresql+psycopg://"):
-            return database_url
-
-        if database_url.startswith("postgresql://"):
-            return database_url.replace(
-                "postgresql://",
-                "postgresql+psycopg://",
-                1,
-            )
-
-        if database_url.startswith("postgres://"):
-            return database_url.replace(
-                "postgres://",
-                "postgresql+psycopg://",
-                1,
-            )
-
-        raise ValueError(
-            "NEON_DATABASE_URL inválida. Use uma URL iniciada por "
-            "'postgresql://' conforme fornecida pelo painel do Neon."
+        return config.sqlalchemy_neon_url(database_url).render_as_string(
+            hide_password=False
         )
 
     def close(self) -> None:
@@ -130,7 +109,8 @@ class Load:
     def load_mongo(
         self,
         data: List[Dict[str, Any]],
-    ) -> None:
+        origem: str = "não informada",
+    ) -> str:
         """
         Carrega os dados brutos na coleção do MongoDB, em lotes.
 
@@ -145,16 +125,40 @@ class Load:
 
         collection = self.client[self.mongo_db][self.mongo_collection]
 
-        # Substitui o retrato bruto para evitar duplicação entre execuções.
-        collection.delete_many({})
-
+        data_extracao = datetime.now(timezone.utc)
+        carga_id = uuid4().hex
+        collection.create_index([("carga_id", 1)])
+        collection.create_index([("data_extracao", -1)])
         for inicio in range(0, len(data), self.MONGO_TAMANHO_LOTE):
-            collection.insert_many(data[inicio : inicio + self.MONGO_TAMANHO_LOTE])
+            documentos = [
+                {
+                    **{k: v for k, v in row.items() if k != "_id"},
+                    "data_extracao": data_extracao,
+                    "carga_id": carga_id,
+                    "origem_extracao": origem,
+                }
+                for row in data[inicio : inicio + self.MONGO_TAMANHO_LOTE]
+            ]
+            collection.insert_many(documentos)
+
+        if collection.count_documents({"carga_id": carga_id}) != len(data):
+            raise ValueError(
+                "Contagem bronze divergente: lote não foi marcado como completo."
+            )
+        self.client[self.mongo_db][config.MONGO_CARGAS].insert_one(
+            {
+                "carga_id": carga_id,
+                "data_extracao": data_extracao,
+                "total": len(data),
+                "origem": origem,
+            }
+        )
 
         print("Dados brutos carregados com sucesso no MongoDB!")
         print(f"Banco: {self.mongo_db}")
         print(f"Coleção: {self.mongo_collection}")
         print(f"Total de documentos: {len(data)}")
+        return carga_id
 
     def _gravar_tabelas(
         self,
@@ -210,6 +214,22 @@ class Load:
                 totais[nome] = int(
                     conn.execute(text(f'SELECT COUNT(*) FROM "{nome}"')).scalar_one()
                 )
+
+                if totais[nome] != len(dados):
+                    raise ValueError(
+                        f"Contagem divergente na tabela {nome}; carga revertida."
+                    )
+
+            if int(df_agregado["total"].sum()) != len(df):
+                raise ValueError("Agregado perdeu registros; carga revertida.")
+            auditoria = dict(df.attrs.get("auditoria", {}))
+            auditoria.update(
+                total_final=totais[self.TABELA_DEMANDAS],
+                total_agregado=int(df_agregado["total"].sum()),
+            )
+            pd.DataFrame([auditoria]).to_sql(
+                config.TABELA_AUDITORIA, conn, if_exists="replace", index=False
+            )
 
         return totais
 

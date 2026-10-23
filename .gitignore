@@ -219,3 +219,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Diagnóstico local da fonte (regenerável, não faz parte da entrega)
+data/source_diagnostic.json
+tmp/

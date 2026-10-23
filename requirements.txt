@@ -12,5 +12,7 @@ psycopg[binary]==3.3.5
 six==1.17.0
 tzdata==2026.3
 urllib3==2.7.0
-prefect
+prefect==3.8.8
+streamlit==1.66.1
+plotly==6.9.0
 black

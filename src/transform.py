@@ -17,8 +17,6 @@ class Transform:
         (leve o bastante para alimentar gráficos no celular).
     """
 
-    ANO_ALVO = 2026
-
     # Nome original da coluna (minúsculo) -> nome final no banco.
     RENOMEAR_COLUNAS = {
         "gruposervico_codigo": "grupo_servico_codigo",
@@ -43,7 +41,17 @@ class Transform:
     RPA_MIN, RPA_MAX = 1, 6
 
     # Textos que representam "sem informação" no dado de origem.
-    VALORES_NULOS = {"", "NULL", "NONE", "NAN", "NA", "N/A", "-", "NAO INFORMADO"}
+    VALORES_NULOS = {
+        "",
+        "NULL",
+        "NONE",
+        "NAN",
+        "NA",
+        "N/A",
+        "-",
+        "...",
+        "NAO INFORMADO",
+    }
 
     # Variações de "sem número" no campo numero.
     VALORES_SEM_NUMERO = {"0", "00", "S N", "SN", "S/N", "S/N°", "S/NO", "S/Nº"}
@@ -71,6 +79,11 @@ class Transform:
                 "andamento",
                 "aguard",
                 "pendente",
+                "pendencia",
+                "preparacao",
+                "execucao",
+                "fiscalizacao",
+                "cadastrad",
                 "abert",
                 "analise",
                 "vistoria",
@@ -99,6 +112,10 @@ class Transform:
 
     COLUNAS_FINAIS = [
         "id_demanda",
+        "id_origem",
+        "data_extracao",
+        "carga_id",
+        "origem_extracao",
         "grupo_servico_codigo",
         "grupo_servico",
         "servico_codigo",
@@ -268,7 +285,7 @@ class Transform:
             data: registros brutos recebidos do Extract ou do MongoDB.
 
         Retorno:
-            DataFrame com uma linha por demanda de `ANO_ALVO`.
+            DataFrame com uma linha por registro recebido, inclusive sem data.
         """
 
         if not data:
@@ -290,6 +307,25 @@ class Transform:
             )
 
         df = bruto[list(self.RENOMEAR_COLUNAS)].rename(columns=self.RENOMEAR_COLUNAS)
+        for coluna in ("id_origem", "carga_id", "origem_extracao"):
+            df[coluna] = (
+                bruto[coluna].astype("string")
+                if coluna in bruto
+                else pd.Series(pd.NA, index=df.index, dtype="string")
+            )
+        df["data_extracao"] = pd.to_datetime(
+            bruto.get("data_extracao", pd.Series(pd.NaT, index=df.index)),
+            utc=True,
+            errors="coerce",
+        )
+        # Campos novos da fonte são mantidos para evitar perda silenciosa de esquema.
+        extras = [
+            c
+            for c in bruto
+            if c not in self.RENOMEAR_COLUNAS and c not in self.COLUNAS_FINAIS
+        ]
+        for coluna in extras:
+            df[coluna] = bruto[coluna].map(self._limpar_texto)
 
         # --- Textos -----------------------------------------------------
         for coluna in ("grupo_servico", "servico", "logradouro", "bairro"):
@@ -310,10 +346,6 @@ class Transform:
         df["data_ultima_situacao"] = self._para_data(df["data_ultima_situacao"])
 
         sem_data = df["data_demanda"].isna().sum()
-        df = df[df["data_demanda"].notna()]
-
-        fora_do_ano = (df["data_demanda"].dt.year != self.ANO_ALVO).sum()
-        df = df[df["data_demanda"].dt.year == self.ANO_ALVO].copy()
 
         # --- Coordenadas -----------------------------------------------
         df["latitude"] = self._para_numero(df["latitude"])
@@ -327,9 +359,10 @@ class Transform:
             trocadas, ["longitude", "latitude"]
         ].values
 
-        coordenada_valida = df["latitude"].between(
-            self.LATITUDE_MIN, self.LATITUDE_MAX
-        ) & df["longitude"].between(self.LONGITUDE_MIN, self.LONGITUDE_MAX)
+        coordenada_valida = (
+            df["latitude"].between(self.LATITUDE_MIN, self.LATITUDE_MAX)
+            & df["longitude"].between(self.LONGITUDE_MIN, self.LONGITUDE_MAX)
+        ).fillna(False)
         df.loc[~coordenada_valida, ["latitude", "longitude"]] = pd.NA
 
         df["latitude"] = df["latitude"].round(6)
@@ -338,7 +371,11 @@ class Transform:
 
         # --- Situação ---------------------------------------------------
         df["situacao_categoria"] = df["situacao"].map(self._categorizar_situacao)
-        df["concluida"] = df["situacao_categoria"] == "Concluída"
+        df["concluida"] = (
+            (df["situacao_categoria"] == "Concluída")
+            .astype("boolean")
+            .mask(df["situacao_categoria"].isna())
+        )
 
         # Última situação não pode ser anterior à abertura da demanda.
         invalida = df["data_ultima_situacao"] < df["data_demanda"]
@@ -357,24 +394,37 @@ class Transform:
         df["hora"] = df["data_demanda"].dt.hour.astype("Int64")
 
         # --- Qualidade --------------------------------------------------
-        # Sem serviço não há o que mostrar no dashboard.
+        # Ausência não é motivo para eliminar a solicitação.
         sem_servico = (df["servico"].isna() & df["grupo_servico"].isna()).sum()
-        df = df[df["servico"].notna() | df["grupo_servico"].notna()].copy()
-
-        df["id_demanda"] = df.apply(self._gerar_id, axis=1)
-
-        antes = len(df)
-        df = df.drop_duplicates(subset="id_demanda", keep="last")
-        duplicadas = antes - len(df)
-
-        df = df[self.COLUNAS_FINAIS].sort_values("data_demanda").reset_index(drop=True)
+        hashes = df.apply(self._gerar_id, axis=1)
+        identidades = ("ckan-" + df["id_origem"]).fillna(hashes)
+        ocorrencias = identidades.groupby(identidades).cumcount()
+        df["id_demanda"] = identidades + "-" + ocorrencias.astype(str)
+        # O hash não prova identidade de negócio: colisões não podem apagar linhas.
+        repetidas = int(hashes.duplicated().sum())
+        df = (
+            df[[*self.COLUNAS_FINAIS, *extras]]
+            .sort_values("data_demanda")
+            .reset_index(drop=True)
+        )
+        if len(df) != total_bruto:
+            raise ValueError("Transformação perdeu registros do bronze.")
+        df.attrs["auditoria"] = {
+            "total_bronze": total_bruto,
+            "total_transformado": len(df),
+            "sem_data": int(sem_data),
+            "sem_servico": int(sem_servico),
+            "sem_coordenadas": int((~df["tem_coordenadas"]).sum()),
+            "hashes_repetidos_preservados": repetidas,
+            "data_extracao": df["data_extracao"].max(),
+            "origem_extracao": ", ".join(df["origem_extracao"].dropna().unique()),
+            "carga_id": ", ".join(df["carga_id"].dropna().unique()),
+        }
 
         print("Atendimentos do 156 transformados com sucesso!")
         print(f"Registros brutos: {total_bruto}")
-        print(f"  Descartados sem data da demanda: {sem_data}")
-        print(f"  Descartados fora de {self.ANO_ALVO}: {fora_do_ano}")
-        print(f"  Descartados sem serviço: {sem_servico}")
-        print(f"  Descartados por duplicidade: {duplicadas}")
+        print(f"  Preservados sem data: {sem_data}; sem serviço: {sem_servico}")
+        print(f"  Hashes repetidos preservados: {repetidas}")
         print(f"Registros finais: {len(df)} | Colunas: {len(df.columns)}")
         print(f"Com coordenadas válidas: {int(df['tem_coordenadas'].sum())}")
         print("Situações encontradas (original -> categoria):")
@@ -414,9 +464,6 @@ class Transform:
             return pd.DataFrame(columns=[*colunas, "total", "tempo_medio_dias"])
 
         base = df.copy()
-        base["bairro"] = base["bairro"].fillna("Não informado")
-        base["grupo_servico"] = base["grupo_servico"].fillna("Não informado")
-        base["situacao_categoria"] = base["situacao_categoria"].fillna("Outros")
 
         agregado = (
             base.groupby(colunas, dropna=False)

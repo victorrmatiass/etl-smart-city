@@ -1,4 +1,5 @@
 import unittest
+import pandas as pd
 
 from src.transform import Transform
 
@@ -59,18 +60,20 @@ class TransformTestCase(unittest.TestCase):
         self.assertEqual(df.loc[0, "ano_mes"], "2026-03")
         self.assertTrue(df["data_ultima_situacao"].isna().all())
 
-    def test_mantem_apenas_2026(self) -> None:
+    def test_preserva_aberturas_de_anos_anteriores(self) -> None:
         df = self.t.transform_demandas_156(
             [registro(), registro(DATA_DEMANDA="2025-12-31T23:00:00")]
         )
 
-        self.assertEqual(len(df), 1)
+        self.assertEqual(len(df), 2)
+        self.assertEqual(set(df["ano"]), {2025, 2026})
 
-    def test_remove_duplicatas_e_gera_id_estavel(self) -> None:
+    def test_preserva_registros_com_mesmo_hash_sem_colisao_de_id(self) -> None:
         a = self.t.transform_demandas_156([registro(), registro()])
         b = self.t.transform_demandas_156([registro(SITUACAO="Cancelado")])
 
-        self.assertEqual(len(a), 1)
+        self.assertEqual(len(a), 2)
+        self.assertTrue(a["id_demanda"].is_unique)
         # A situação muda com o tempo, mas o ID da demanda não.
         self.assertEqual(a.loc[0, "id_demanda"], b.loc[0, "id_demanda"])
 
@@ -132,6 +135,66 @@ class TransformTestCase(unittest.TestCase):
 
         self.assertEqual(agregado["total"].sum(), 3)
         self.assertEqual(len(agregado), 2)
+
+    def test_nulos_nao_eliminam_linha_nem_viram_zero(self):
+        df = self.t.transform_demandas_156(
+            [
+                registro(
+                    DATA_DEMANDA="...",
+                    DATA_ULT_SITUACAO="N/A",
+                    SERVICO_DESCRICAO="-",
+                    GRUPOSERVICO_DESCRICAO="",
+                    RPA="N/A",
+                    SITUACAO="...",
+                    latitude=None,
+                    longitude=None,
+                )
+            ]
+        )
+        self.assertEqual(len(df), 1)
+        for column in (
+            "data_demanda",
+            "data_ultima_situacao",
+            "servico",
+            "grupo_servico",
+            "rpa",
+            "situacao",
+            "concluida",
+            "latitude",
+            "longitude",
+            "tempo_resolucao_dias",
+        ):
+            self.assertTrue(pd.isna(df.loc[0, column]), column)
+        ag = self.t.agregar_para_dashboard(df)
+        self.assertEqual(ag["total"].sum(), 1)
+        self.assertTrue(ag["tempo_medio_dias"].isna().all())
+
+    def test_categorias_da_fonte_real(self):
+        for situacao in (
+            "PREPARACAO",
+            "EXECUCAO",
+            "PENDENCIA",
+            "FISCALIZACAO",
+            "CADASTRADA",
+        ):
+            self.assertEqual(self.t._categorizar_situacao(situacao), "Em andamento")
+        self.assertEqual(self.t._categorizar_situacao("ATENDIDA"), "Concluída")
+
+    def test_preserva_metadados_e_campos_novos(self):
+        df = self.t.transform_demandas_156(
+            [
+                registro(
+                    id_origem=42,
+                    carga_id="abc",
+                    data_extracao="2026-10-23T12:00:00Z",
+                    CAMPO_NOVO="valor",
+                )
+            ]
+        )
+        self.assertEqual(df.loc[0, "id_origem"], "42")
+        self.assertEqual(df.loc[0, "carga_id"], "abc")
+        self.assertEqual(df.loc[0, "campo_novo"], "valor")
+        self.assertTrue(pd.notna(df.loc[0, "data_extracao"]))
 
 
 if __name__ == "__main__":

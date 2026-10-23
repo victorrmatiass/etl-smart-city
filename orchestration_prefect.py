@@ -1,16 +1,12 @@
 import argparse
-from pathlib import Path
 from typing import Any, Optional
 import pandas as pd
-from dotenv import load_dotenv
 from prefect import flow, get_run_logger, task
 from run_etl import extrair_demandas_156
 from src.extract import Extract
 from src.load import Load
 from src.transform import Transform
 
-# Carrega as variáveis do arquivo .env localizado na raiz do projeto.
-load_dotenv(Path(__file__).resolve().parent / ".env")
 
 # Extrai os dados do portal, usando os fallbacks para CSV e arquivo local
 # definidos pelo ETL atual; no modo SQLite, não abre conexão com MongoDB.
@@ -18,42 +14,44 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 def extract_data(
     rpa: Optional[int] = None,
     somente_sqlite: bool = False,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], str]:
     logger = get_run_logger()
     extractor = Extract(usar_mongo=not somente_sqlite)
 
     try:
         data = extrair_demandas_156(extractor, rpa=rpa)
         logger.info("Registros extraídos: %s", len(data))
-        return data
+        return data, extractor.origem
     finally:
         extractor.close()
 
 
 # Persiste o retrato dos dados brutos no MongoDB, como no pipeline original.
 @task(name="Carregar dados brutos no MongoDB", retries=3, retry_delay_seconds=10)
-def load_raw_mongo(data: list[dict[str, Any]]) -> None:
+def load_raw_mongo(data: list[dict[str, Any]], origem: str) -> str:
     logger = get_run_logger()
     loader = Load()
 
     try:
-        loader.load_mongo(data)
+        carga_id = loader.load_mongo(data, origem=origem)
         logger.info("Registros brutos carregados no MongoDB: %s", len(data))
+        return carga_id
     finally:
         loader.close()
 
 
 @task(name="Ler dados brutos do MongoDB")
-def read_raw_mongo() -> list[dict[str, Any]]:
+def read_raw_mongo(carga_id: str) -> list[dict[str, Any]]:
     logger = get_run_logger()
     extractor = Extract()
 
     try:
-        data = extractor.extract_collection_from_mongo()
+        data = extractor.extract_latest_from_mongo(carga_id)
         logger.info("Registros brutos lidos do MongoDB: %s", len(data))
         return data
     finally:
         extractor.close()
+
 
 @task(name="Transformar demandas 156")
 def transform_data(
@@ -64,6 +62,8 @@ def transform_data(
 
     df = transformer.transform_demandas_156(data)
     df_agregado = transformer.agregar_para_dashboard(df)
+    if len(data) != len(df) or int(df_agregado["total"].sum()) != len(df):
+        raise ValueError("Contagens bronze, transformação e agregado divergem.")
     logger.info(
         "Demandas transformadas: %s; linhas agregadas: %s",
         len(df),
@@ -113,13 +113,15 @@ def etl_smart_city_flow(
     somente_sqlite: bool = False,
     rpa: Optional[int] = None,
 ) -> None:
-    data = extract_data(rpa=rpa, somente_sqlite=somente_sqlite)
+    data, origem = extract_data(rpa=rpa, somente_sqlite=somente_sqlite)
 
     if somente_sqlite:
         data_transformacao = data
     else:
-        load_raw_mongo(data)
-        data_transformacao = read_raw_mongo()
+        carga_id = load_raw_mongo(data, origem)
+        data_transformacao = read_raw_mongo(carga_id)
+        if len(data_transformacao) != len(data):
+            raise ValueError("Contagem da fonte difere do bronze.")
 
     dataframes = transform_data(data_transformacao)
     load_sqlite(dataframes)

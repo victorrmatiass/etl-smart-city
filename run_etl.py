@@ -1,5 +1,4 @@
 import argparse
-from pathlib import Path
 from typing import Optional
 
 import requests
@@ -7,9 +6,7 @@ import requests
 from src.extract import Extract
 from src.load import Load
 from src.transform import Transform
-
-RAIZ_PROJETO = Path(__file__).resolve().parent
-CAMINHO_CSV_LOCAL = RAIZ_PROJETO / "data" / "156_cco_diario_2026.csv"
+from src.config import CAMINHO_CSV_LOCAL
 
 
 def extrair_demandas_156(ext: Extract, rpa: Optional[int] = None) -> list:
@@ -71,14 +68,18 @@ def main(somente_sqlite: bool = False, rpa: Optional[int] = None) -> None:
             data_mongo = data
         else:
             titulo_etapa("ETAPA 2 - CARGA DO DADO BRUTO NO MONGODB")
-            ld.load_mongo(data)
+            carga_id = ld.load_mongo(data, origem=ext.origem)
 
             titulo_etapa("ETAPA 3 - LEITURA DO DADO BRUTO NO MONGODB")
-            data_mongo = ext.extract_collection_from_mongo()
+            data_mongo = ext.extract_latest_from_mongo(carga_id)
+            if len(data_mongo) != len(data):
+                raise ValueError("Contagens da fonte e do bronze divergem.")
 
         titulo_etapa("ETAPA 4 - TRANSFORMAÇÃO")
         df = transformer.transform_demandas_156(data_mongo)
         df_agregado = transformer.agregar_para_dashboard(df)
+        if len(data_mongo) != len(df) or int(df_agregado["total"].sum()) != len(df):
+            raise ValueError("Contagens bronze, transformação e agregado divergem.")
 
         titulo_etapa("ETAPA 5 - CARGA NO SQLITE (local)")
         total_sqlite = ld.load_sqlite(df, df_agregado)
