@@ -12,12 +12,16 @@ load_dotenv(RAIZ_PROJETO / ".env")
 
 MONGODB_URI = os.getenv("MONGODB_URI", "")
 NEON_DATABASE_URL = os.getenv("NEON_DATABASE_URL", "")
+GPT_API_KEY = os.getenv("GPT_API_KEY", "")
+GPT_BASE_URL = os.getenv("GPT_BASE_URL", "")
+MODELO = os.getenv("MODELO", "") or "gpt-6-luna"
 MONGO_DB = "SMART_CITY"
 MONGO_COLLECTION = "EMLURB_156_DEMANDAS_2026"
 MONGO_CARGAS = MONGO_COLLECTION + "_CARGAS"
 TABELA_DEMANDAS = "emlurb_156_demandas"
 TABELA_AGREGADO = "emlurb_156_agregado_mensal"
 TABELA_AUDITORIA = "emlurb_156_auditoria"
+TABELAS_MCP = (TABELA_DEMANDAS, TABELA_AGREGADO, TABELA_AUDITORIA)
 CKAN_BASE_URL = "https://dados.recife.pe.gov.br"
 RESOURCE_ID = "80c5b3cd-d4f7-466e-9031-e636ef56dd99"
 PACKAGE_ID = "331e88a9-d878-464b-b0bb-cb803d7091b3"

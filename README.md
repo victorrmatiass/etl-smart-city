@@ -136,6 +136,10 @@ Crie um arquivo `.env` na raiz do projeto:
 ```
 MONGODB_URI="mongodb+srv://usuario:senha@cluster0.xxxxx.mongodb.net/?retryWrites=true&w=majority"
 NEON_DATABASE_URL="postgresql://usuario:senha@servidor.neon.tech/neondb?sslmode=require"
+GPT_API_KEY="chave_do_provedor_de_IA"
+MODELO="gpt-6-luna"
+# Opcional, somente para outro provedor compatível com a biblioteca OpenAI:
+GPT_BASE_URL="https://endereco-do-provedor/v1"
 ```
 
 Não versione o `.env` (ele já está no `.gitignore`). O arquivo
@@ -150,6 +154,74 @@ Não versione o `.env` (ele já está no `.gitignore`). O arquivo
 Uma chave da API administrativa do Neon não é necessária. O pipeline usa
 diretamente a connection string PostgreSQL. A tabela final é criada
 automaticamente durante a carga.
+
+## Servidor MCP: Neon + IA
+
+O servidor da Aula 10 está em `servidor.py` e usa transporte `stdio`. As
+ferramentas de catálogo e o esquema enviado ao modelo ficam restritos às tabelas
+`emlurb_156_demandas`, `emlurb_156_agregado_mensal` e
+`emlurb_156_auditoria`. A conexão PostgreSQL opera em modo somente leitura e a
+ferramenta de SQL aceita apenas um comando `SELECT`/`WITH` por chamada. Como
+proteção principal, use no `.env` uma connection string de um usuário Neon com
+acesso apenas às tabelas que podem ser consultadas.
+
+Ferramentas disponíveis:
+
+- `listar_tabelas()`: lista as três tabelas do pipeline;
+- `descrever_tabela(tabela)`: mostra colunas e tipos;
+- `executar_select(sql)`: executa consulta e devolve no máximo 10 linhas;
+- `contar_linhas(tabela)`: exercício 1, conta as linhas com validação do nome;
+- `perguntar_ao_banco(pergunta)`: o modelo gera SQL, o Neon responde e o modelo explica.
+
+Os exercícios 2 e 3 também estão aplicados: `MODELO` vem do `.env`, com
+`gpt-6-luna` como padrão, e `BancoComLimite` herda de `BancoNeon`, limitando
+qualquer resultado de `consultar` a dez linhas. `GPT_BASE_URL` é opcional e
+permite usar outro serviço compatível com a biblioteca OpenAI; nesse caso,
+`GPT_API_KEY` e `MODELO` devem conter os valores fornecidos por esse serviço.
+
+Depois de instalar as dependências, teste a integração com o Neon sem consumir
+uma chamada de IA:
+
+```powershell
+python scripts/check_mcp.py
+```
+
+Para abrir o cliente interativo da aula:
+
+```powershell
+python cliente_teste.py
+```
+
+Ele lista as ferramentas e permite fazer uma pergunta. A ferramenta
+`perguntar_ao_banco` exige `GPT_API_KEY`; as demais usam apenas o Neon. Para
+iniciar o servidor `stdio` diretamente:
+
+```powershell
+python servidor.py
+```
+
+Para explorar cada ferramenta visualmente, como na aula:
+
+```powershell
+fastmcp dev inspector servidor.py
+```
+
+Exemplo de configuração em um cliente MCP, trocando os caminhos pelos caminhos
+absolutos do computador que executará o servidor:
+
+```json
+{
+  "mcpServers": {
+    "smart-city-neon": {
+      "command": "C:\\caminho\\etl-smart-city\\.venv\\Scripts\\python.exe",
+      "args": ["C:\\caminho\\etl-smart-city\\servidor.py"]
+    }
+  }
+}
+```
+
+O `.env` permanece somente na raiz local do projeto e nunca deve ser enviado ao
+GitHub nem exibido durante a apresentação.
 
 ## Dashboard: Recife em demandas
 
@@ -307,6 +379,11 @@ etl-smart-city/
 ├── .streamlit/config.toml         # tema visual
 ├── docs/dashboard.png            # print para a entrega
 ├── scripts/inspect_source.py     # perfil da fonte pública (diagnóstico opcional)
+├── scripts/check_mcp.py          # valida as ferramentas MCP contra o Neon
+├── banco.py                      # BancoNeon e BancoComLimite (somente leitura)
+├── assistente.py                 # cliente de IA configurável
+├── servidor.py                   # servidor FastMCP via stdio
+├── cliente_teste.py              # cliente MCP interativo em memória
 ├── run_etl.py                    # Orquestra o pipeline completo
 ├── orchestration_prefect.py      # Executa o pipeline atual como um flow Prefect
 ├── requirements.txt
