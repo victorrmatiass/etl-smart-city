@@ -82,7 +82,7 @@ Na fonte consultada: `ATENDIDA` (7.662) é concluída; `EXECUCAO` (1.439), `CADA
 | Revisão de índices fixos | Não há acesso `[0]` a uma lista de resultados no Transform. O `[0]` de `splitlines()` em Extract lê apenas o cabeçalho para detectar delimitador; as linhas do CSV são percorridas por completo. As perdas reais eram filtro de ano/data/serviço e deduplicação por hash, agora removidos |
 | Ausências | A API devolveu `null` em latitude e longitude de 5.289 registros; outros dois pares ficaram fora da caixa geográfica validada, totalizando 5.291 sem coordenadas válidas. Todos continuam nos totais. Os demais marcadores são aceitos defensivamente, mas não foram observados nesta consulta |
 | Bronze histórico | Cada lote recebe `data_extracao` UTC, `carga_id` e `origem_extracao`; não há `delete_many`. Documentos anteriores sem carimbo ficam preservados |
-| Última carga | `extract_latest_from_mongo()` seleciona o último lote **completo**. Um manifesto em `EMLURB_156_DEMANDAS_2026_CARGAS` só é criado após inserção e conferência. Lotes interrompidos não são promovidos. Os executores passam o ID do lote recém-gravado para não misturar execuções concorrentes |
+| Última carga | O Atlas confirma o manifesto e o lote completo na mesma transação. A transformação lê o ID devolvido pela carga. A leitura sem ID usa a última observação da fonte. |
 | Reconciliação | Fonte = lote bronze = tabela detalhada = soma do agregado. A gravação SQL confere os totais antes de confirmar a transação e publica a auditoria |
 
 `NUMERO=0`/`00` é normalizado como `S/N` (rótulo textual de endereço, não medição). Coordenadas 0/0 são inválidas para Recife e viram nulas; zero não é tratado globalmente como ausência. `tempo_resolucao_dias` fica nulo para não concluídas, datas ausentes ou inválidas. Os valores originais continuam disponíveis no bronze para auditoria.
@@ -96,7 +96,7 @@ API do portal (CKAN)  ->  CSV online  ->  CSV local em data/   (fallbacks, nessa
    Extract (baixa os atendimentos)
         |
         v
-Load.load_mongo  ->  MongoDB (novo lote, sem apagar o histórico)
+Load.load_mongo  ->  MongoDB (reutiliza o lote ou grava um novo conteúdo)
         |
         v
 Extract.extract_latest_from_mongo (relê somente o lote completo)
@@ -308,7 +308,26 @@ No modo SQLite-only, as etapas do MongoDB e do NeonDB são ignoradas.
 
 Isso grava os dados brutos na coleção `EMLURB_156_DEMANDAS_2026` (banco `SMART_CITY`) no MongoDB Atlas, transforma os registros e salva as tabelas `emlurb_156_demandas` e `emlurb_156_agregado_mensal` no SQLite (`data/db/smart_city.db`, para abrir no VS Code) e no NeonDB. Ao final, o programa consulta as tabelas para confirmar a quantidade persistida.
 
-O MongoDB **acumula cargas históricas**. Apenas as tabelas derivadas EMLURB (detalhada, agregada e auditoria) são substituídas no SQLite e Neon, de forma transacional. Tabelas de outros projetos não são modificadas. As cargas parciais no bronze permanecem para diagnóstico, sem manifesto de conclusão. Não há política automática de retenção; o armazenamento cresce por execução.
+O MongoDB mantém um retrato por conteúdo e origem. A assinatura SHA-256 considera todas as linhas, inclusive repetições da própria fonte, independentemente da ordem. Uma reexecução reutiliza o lote completo e registra a última observação. Lotes antigos com manifesto também podem ser reconhecidos pelo conteúdo. A prata no Neon substitui as tabelas derivadas e confere as contagens na mesma transação.
+
+#### Agendamento com Prefect
+
+Com o ambiente virtual ativo, inicie o servidor local em um terminal:
+
+```powershell
+prefect server start
+```
+
+Em outro terminal, na raiz e com o mesmo ambiente ativo:
+
+```powershell
+$env:PREFECT_API_URL = "http://127.0.0.1:4200/api"
+python orchestration_prefect.py --agendar
+```
+
+O deployment `emlurb-156` executa a ETL completa diariamente às 08h de Recife, com uma execução agendada por vez. Ajuste `ETL_CRON` e `ETL_TIMEZONE` no `.env` e reinicie o runner para mudar o horário. Mantenha o servidor e o runner em execução. Confira a próxima execução na seção Deployments em http://127.0.0.1:4200. Para conferir a carga publicada, rode `python scripts/verify_pipeline.py`.
+
+Para transferir para o computador de um colega, encerre o runner anterior com `Ctrl+C`. No novo computador, instale as dependências, configure no `.env` o mesmo Atlas e Neon e libere o IP do colega no Atlas. Inicie os dois comandos acima a partir do novo clone. No Linux/macOS, use `export PREFECT_API_URL=http://127.0.0.1:4200/api` no segundo terminal. Cada servidor Prefect local mantém seu próprio histórico de execuções.
 
 O modo `--somente-sqlite` é auxiliar e não cumpre o fluxo obrigatório com os dois bancos. O parâmetro `--rpa` faz um recorte intencional na fonte; para a entrega e para comparar toda a cidade, execute sem ele. Não execute cargas com recortes distintos simultaneamente contra o mesmo destino: a última publicação SQL será a exibida no painel.
 

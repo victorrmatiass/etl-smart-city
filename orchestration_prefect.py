@@ -2,6 +2,8 @@ import argparse
 from typing import Any, Optional
 import pandas as pd
 from prefect import flow, get_run_logger, task
+from prefect.schedules import Cron
+from src import config
 from run_etl import extrair_demandas_156
 from src.extract import Extract
 from src.load import Load
@@ -145,7 +147,20 @@ def main() -> None:
         type=int,
         help="filtra a extração por uma RPA do Recife (1 a 6)",
     )
+    parser.add_argument(
+        "--agendar", action="store_true", help="serve o deployment da ETL completa"
+    )
     args = parser.parse_args()
+    if args.agendar:
+        if args.somente_sqlite or args.rpa is not None:
+            parser.error("--agendar executa a carga completa de todas as RPAs")
+        etl_smart_city_flow.serve(
+            name="emlurb-156",
+            schedule=Cron(config.ETL_CRON, timezone=config.ETL_TIMEZONE),
+            limit=1,
+            global_limit=1,
+        )
+        return
 
     etl_smart_city_flow(somente_sqlite=args.somente_sqlite, rpa=args.rpa)
 

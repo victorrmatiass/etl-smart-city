@@ -1,11 +1,13 @@
 from datetime import datetime, timezone
-from uuid import uuid4
+import hashlib
+import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import certifi
 import pandas as pd
 from pymongo import MongoClient
+from pymongo.errors import DuplicateKeyError
 from pymongo.server_api import ServerApi
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
@@ -123,42 +125,92 @@ class Load:
                 "A carga no MongoDB foi cancelada porque nenhum registro foi recebido."
             )
 
-        collection = self.client[self.mongo_db][self.mongo_collection]
-
+        db = self.client[self.mongo_db]
+        collection = db[self.mongo_collection]
+        cargas = db[config.MONGO_CARGAS]
         data_extracao = datetime.now(timezone.utc)
-        carga_id = uuid4().hex
+        assinatura = self._assinatura(data, origem)
         collection.create_index([("carga_id", 1)])
         collection.create_index([("data_extracao", -1)])
-        for inicio in range(0, len(data), self.MONGO_TAMANHO_LOTE):
-            documentos = [
+        cargas.create_index("assinatura", unique=True, sparse=True)
+        observacao = {"$max": {"ultima_observacao": data_extracao}}
+        existente = cargas.find_one({"assinatura": assinatura})
+        if existente:
+            cargas.update_one({"_id": existente["_id"]}, observacao)
+            return existente["carga_id"]
+
+        # Um lote da versão anterior pode já conter exatamente esta extração.
+        candidatos = cargas.find(
+            {"assinatura": {"$exists": False}, "origem": origem, "total": len(data)}
+        ).sort("data_extracao", -1)
+        for legado in candidatos:
+            linhas = collection.find({"carga_id": legado["carga_id"]})
+            if self._assinatura(linhas, origem) == assinatura:
+                cargas.update_one(
+                    {"_id": legado["_id"]},
+                    {"$set": {"assinatura": assinatura}, **observacao},
+                )
+                return legado["carga_id"]
+
+        def gravar(session):
+            # O índice único arbitra escritores concorrentes. O Atlas confirma
+            # manifesto e documentos juntos, inclusive em retries do driver.
+            cargas.insert_one(
                 {
-                    **{k: v for k, v in row.items() if k != "_id"},
+                    "assinatura": assinatura,
+                    "carga_id": assinatura,
                     "data_extracao": data_extracao,
-                    "carga_id": carga_id,
-                    "origem_extracao": origem,
-                }
-                for row in data[inicio : inicio + self.MONGO_TAMANHO_LOTE]
-            ]
-            collection.insert_many(documentos)
-
-        if collection.count_documents({"carga_id": carga_id}) != len(data):
-            raise ValueError(
-                "Contagem bronze divergente: lote não foi marcado como completo."
+                    "ultima_observacao": data_extracao,
+                    "origem": origem,
+                    "total": len(data),
+                },
+                session=session,
             )
-        self.client[self.mongo_db][config.MONGO_CARGAS].insert_one(
-            {
-                "carga_id": carga_id,
-                "data_extracao": data_extracao,
-                "total": len(data),
-                "origem": origem,
-            }
-        )
+            for inicio in range(0, len(data), self.MONGO_TAMANHO_LOTE):
+                documentos = [
+                    {
+                        **{k: v for k, v in row.items() if k != "_id"},
+                        "data_extracao": data_extracao,
+                        "carga_id": assinatura,
+                        "origem_extracao": origem,
+                    }
+                    for row in data[inicio : inicio + self.MONGO_TAMANHO_LOTE]
+                ]
+                collection.insert_many(documentos, session=session)
+            if collection.count_documents(
+                {"carga_id": assinatura}, session=session
+            ) != len(data):
+                raise ValueError(
+                    "Contagem do lote bronze divergente; transação cancelada."
+                )
 
-        print("Dados brutos carregados com sucesso no MongoDB!")
-        print(f"Banco: {self.mongo_db}")
-        print(f"Coleção: {self.mongo_collection}")
-        print(f"Total de documentos: {len(data)}")
-        return carga_id
+        try:
+            with self.client.start_session() as session:
+                session.with_transaction(gravar)
+        except DuplicateKeyError:
+            vencedor = cargas.find_one({"assinatura": assinatura})
+            if vencedor is None:
+                raise
+            cargas.update_one({"_id": vencedor["_id"]}, observacao)
+            return vencedor["carga_id"]
+        return assinatura
+
+    @staticmethod
+    def _assinatura(linhas, origem):
+        """Identifica um retrato independente da ordem, preservando multiplicidades."""
+        metadados = {"_id", "data_extracao", "carga_id", "origem_extracao"}
+        hashes = sorted(
+            hashlib.sha256(
+                json.dumps(
+                    {k: v for k, v in linha.items() if k not in metadados},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                ).encode()
+            ).digest()
+            for linha in linhas
+        )
+        return hashlib.sha256(origem.encode() + b"\0" + b"".join(hashes)).hexdigest()
 
     def _gravar_tabelas(
         self,

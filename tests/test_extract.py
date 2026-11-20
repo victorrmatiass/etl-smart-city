@@ -86,7 +86,7 @@ class ExtractTestCase(unittest.TestCase):
         self.assertEqual(len(self.extract.extract_latest_from_mongo()), 2)
         collection.find.assert_called_once_with({"carga_id": "nova"})
         db[config.MONGO_CARGAS].find_one.assert_called_once_with(
-            {}, sort=[("data_extracao", -1)]
+            {}, sort=[("ultima_observacao", -1), ("data_extracao", -1)]
         )
 
     def test_bloqueia_lote_incompleto(self):

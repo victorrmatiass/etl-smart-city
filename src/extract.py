@@ -285,12 +285,14 @@ class Extract:
     def extract_latest_from_mongo(self, carga_id=None) -> List[Dict[str, Any]]:
         """Lê só o lote completo mais recente (ou o lote desta execução).
 
-        O manifesto só é inserido após todos os documentos: uma carga parcial
-        nunca substitui uma completa. Documentos antigos sem carimbo permanecem.
+        A transação do bronze publica manifesto e documentos juntos.
+        Documentos antigos sem carimbo permanecem no histórico.
         """
         db = self.client[self.mongo_db]
         filtro = {"carga_id": carga_id} if carga_id else {}
-        carga = db[config.MONGO_CARGAS].find_one(filtro, sort=[("data_extracao", -1)])
+        carga = db[config.MONGO_CARGAS].find_one(
+            filtro, sort=[("ultima_observacao", -1), ("data_extracao", -1)]
+        )
         if carga is None:
             raise ValueError(
                 "Nenhuma carga completa com data_extracao encontrada. Execute a extração primeiro."
